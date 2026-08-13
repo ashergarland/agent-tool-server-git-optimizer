@@ -9,7 +9,6 @@ const generatedSegments = new Set(['build', 'coverage', 'dist', 'generated', 'ou
 const generatedAsset =
   /(?:\.map|\.min\.(?:css|js)|\.(?:gif|ico|jpe?g|pdf|png|svg|webp|woff2?|ttf))$/i;
 const safeRef = /^(?!-)[A-Za-z0-9./_@~^+-]+$/;
-const operationalGitErrorCodes = new Set(['EACCES', 'EAGAIN', 'EMFILE', 'ENOENT', 'ENOMEM']);
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -17,7 +16,7 @@ const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
 const isOperationalGitFailure = (error: unknown): boolean => {
   if (!isObjectRecord(error)) return false;
   const code = typeof error.code === 'string' ? error.code : undefined;
-  if (code && operationalGitErrorCodes.has(code)) return true;
+  if (code === 'ENOENT') return true;
   const signal = typeof error.signal === 'string' ? error.signal : undefined;
   const killed = error.killed === true;
   return killed || signal === 'SIGTERM';
