@@ -5,14 +5,9 @@ import { createToolRegistry } from '../tools/registry.js';
 import { createMcpServer } from './server.js';
 
 const config = loadConfig({ ...process.env, AUTH_MODE: 'disabled', NODE_ENV: 'development' });
-const server = createMcpServer(
-  config,
-  createToolRegistry(),
-  createServices(config),
-  {
-    requestId: `stdio-${process.pid}`,
-    principal: 'stdio-client',
-  },
-);
+const server = createMcpServer(config, createToolRegistry(), createServices(config), {
+  requestId: `stdio-${process.pid}`,
+  principal: 'stdio-client',
+});
 
 await server.connect(new StdioServerTransport());

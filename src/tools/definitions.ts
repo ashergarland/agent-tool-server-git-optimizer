@@ -32,7 +32,7 @@ export const defineTool = <InputSchema extends z.ZodType, OutputSchema extends z
 
 const fileSummarySchema = z.object({
   path: z.string(),
-  change: z.enum(['Added', 'Deleted', 'Modified', 'Renamed']),
+  change: z.enum(['Added', 'Deleted', 'Modified']),
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
   details: z.string(),
@@ -58,4 +58,6 @@ export const summarizeCommitDiffTool = defineTool({
   handler: (input, services) => services.git.summarizeCommitDiff(input),
 });
 
-export const toolDefinitions = [summarizeCommitDiffTool] as const satisfies readonly ToolDefinition[];
+export const toolDefinitions = [
+  summarizeCommitDiffTool,
+] as const satisfies readonly ToolDefinition[];

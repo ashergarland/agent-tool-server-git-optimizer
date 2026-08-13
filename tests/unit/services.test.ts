@@ -17,9 +17,12 @@ describe('Git diff service', () => {
         ].join('\n');
       }
       if (arguments_.includes('--numstat')) {
-        return ['4\t2\tsrc/state.ts', '10\t1\tpackage-lock.json', '50\t0\tdist/app.js', '1\t1\tdocs/readme.md'].join(
-          '\n',
-        );
+        return [
+          '4\t2\tsrc/state.ts',
+          '10\t1\tpackage-lock.json',
+          '50\t0\tdist/app.js',
+          '1\t1\tdocs/readme.md',
+        ].join('\n');
       }
       return [
         'diff --git a/src/state.ts b/src/state.ts',

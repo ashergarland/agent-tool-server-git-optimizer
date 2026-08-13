@@ -6,18 +6,19 @@ const execFileAsync = promisify(execFile);
 const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const lockfiles = new Set(['package-lock.json', 'pnpm-lock.yaml']);
 const generatedSegments = new Set(['build', 'coverage', 'dist', 'generated', 'out', 'vendor']);
-const generatedAsset = /(?:\.map|\.min\.(?:css|js)|\.(?:gif|ico|jpe?g|pdf|png|svg|webp|woff2?|ttf))$/i;
-const safeRef = /^(?!-)[^\s\x00-\x1f\x7f~^:?*[\\]+$/;
+const generatedAsset =
+  /(?:\.map|\.min\.(?:css|js)|\.(?:gif|ico|jpe?g|pdf|png|svg|webp|woff2?|ttf))$/i;
+const safeRef = /^(?!-)\S+$/;
 
 export interface DiffSummary {
   readonly summary: string;
-  readonly files: readonly FileSummary[];
-  readonly ignoredFiles: readonly string[];
+  readonly files: FileSummary[];
+  readonly ignoredFiles: string[];
 }
 
 export interface FileSummary {
   readonly path: string;
-  readonly change: 'Added' | 'Deleted' | 'Modified' | 'Renamed';
+  readonly change: 'Added' | 'Deleted' | 'Modified';
   readonly additions: number;
   readonly deletions: number;
   readonly details: string;
@@ -39,7 +40,10 @@ const runGit: GitRunner = async (arguments_, cwd) => {
       typeof error === 'object' && error !== null && 'stderr' in error
         ? String(error.stderr).trim()
         : undefined;
-    throw badRequest('Unable to read the requested Git diff', details ? { git: details } : undefined);
+    throw badRequest(
+      'Unable to read the requested Git diff',
+      details ? { git: details } : undefined,
+    );
   }
 };
 
@@ -53,9 +57,10 @@ const isIgnored = (path: string): boolean => {
   );
 };
 
-const parseNameStatus = (
-  output: string,
-): { path: string; change: FileSummary['change'] }[] =>
+const isSafeRef = (ref: string): boolean =>
+  safeRef.test(ref) && ![...ref].some((character) => character.charCodeAt(0) < 32);
+
+const parseNameStatus = (output: string): { path: string; change: FileSummary['change'] }[] =>
   output
     .trim()
     .split('\n')
@@ -63,14 +68,7 @@ const parseNameStatus = (
     .map((line) => {
       const [status = 'M', firstPath = '', renamedPath] = line.split('\t');
       const path = renamedPath ?? firstPath;
-      const change =
-        status[0] === 'A'
-          ? 'Added'
-          : status[0] === 'D'
-            ? 'Deleted'
-            : status[0] === 'R'
-              ? 'Renamed'
-              : 'Modified';
+      const change = status[0] === 'A' ? 'Added' : status[0] === 'D' ? 'Deleted' : 'Modified';
       return { path, change };
     });
 
@@ -108,11 +106,7 @@ const functionNamesByFile = (patch: string): Map<string, readonly string[]> => {
   return new Map([...names].map(([file, values]) => [file, [...values].slice(0, 3)]));
 };
 
-const detailFor = (
-  names: readonly string[],
-  additions: number,
-  deletions: number,
-): string => {
+const detailFor = (names: readonly string[], additions: number, deletions: number): string => {
   const lines = `${additions} addition${additions === 1 ? '' : 's'}, ${deletions} deletion${
     deletions === 1 ? '' : 's'
   }`;
@@ -127,7 +121,7 @@ export class GitService {
     baseRef?: string | undefined;
     targetRef: string;
   }): Promise<DiffSummary> {
-    if (!safeRef.test(input.targetRef) || (input.baseRef && !safeRef.test(input.baseRef))) {
+    if (!isSafeRef(input.targetRef) || (input.baseRef && !isSafeRef(input.baseRef))) {
       throw badRequest('Git references contain unsupported characters');
     }
 
@@ -145,18 +139,17 @@ export class GitService {
       }
     }
 
-    const commonArguments = [
+    const diffArguments = [
       'diff',
       '--no-ext-diff',
       '--no-color',
       '--ignore-all-space',
-      baseRef,
-      input.targetRef,
-      '--',
+      '--no-renames',
     ] as const;
+    const rangeArguments = [baseRef, input.targetRef, '--'] as const;
     const [statusOutput, statsOutput] = await Promise.all([
-      this.runner([...commonArguments.slice(0, 4), '--name-status', ...commonArguments.slice(4)], input.repositoryPath),
-      this.runner([...commonArguments.slice(0, 4), '--numstat', ...commonArguments.slice(4)], input.repositoryPath),
+      this.runner([...diffArguments, '--name-status', ...rangeArguments], input.repositoryPath),
+      this.runner([...diffArguments, '--numstat', ...rangeArguments], input.repositoryPath),
     ]);
     const statuses = parseNameStatus(statusOutput);
     const ignoredFiles = statuses.filter(({ path }) => isIgnored(path)).map(({ path }) => path);
@@ -167,9 +160,9 @@ export class GitService {
         ? ''
         : await this.runner(
             [
-              ...commonArguments.slice(0, 4),
+              ...diffArguments,
               '--unified=0',
-              ...commonArguments.slice(4),
+              ...rangeArguments,
               ...retained.map(({ path }) => path),
             ],
             input.repositoryPath,

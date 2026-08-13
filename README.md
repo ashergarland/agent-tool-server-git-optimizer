@@ -16,11 +16,11 @@ Runs `git diff` in a local repository and returns a compact per-file changelog. 
 
 Input:
 
-| Field            | Required | Default | Purpose                                      |
-| ---------------- | -------- | ------- | -------------------------------------------- |
-| `repositoryPath` | No       | `.`     | Local Git working tree                       |
-| `baseRef`        | No       | parent  | Base commit or ref                           |
-| `targetRef`      | No       | `HEAD`  | Commit or ref to summarize                   |
+| Field            | Required | Default | Purpose                    |
+| ---------------- | -------- | ------- | -------------------------- |
+| `repositoryPath` | No       | `.`     | Local Git working tree     |
+| `baseRef`        | No       | parent  | Base commit or ref         |
+| `targetRef`      | No       | `HEAD`  | Commit or ref to summarize |
 
 When `baseRef` is omitted, the tool compares the parent of `targetRef`; root commits are compared
 with Git's empty tree.

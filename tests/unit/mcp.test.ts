@@ -13,12 +13,10 @@ afterEach(async () => Promise.all(closeables.splice(0).map((value) => value.clos
 describe('MCP adapter', () => {
   it('lists and invokes tools from the shared registry', async () => {
     const config = testConfig();
-    const server = createMcpServer(
-      config,
-      createToolRegistry(),
-      createServices(config),
-      { requestId: 'mcp-test', principal: 'test-client' },
-    );
+    const server = createMcpServer(config, createToolRegistry(), createServices(config), {
+      requestId: 'mcp-test',
+      principal: 'test-client',
+    });
     const client = new Client({ name: 'test-client', version: '1.0.0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     closeables.push(client, server);
