@@ -1,6 +1,6 @@
 {
-  "id": "agent-tool-server-template",
-  "repository": "https://github.com/ashergarland/agent-tool-server-template",
+  "id": "agent-tool-server-git-optimizer",
+  "repository": "https://github.com/ashergarland/agent-tool-server-git-optimizer",
   "serverMetadata": "server.json",
-  "categories": ["developer-tools", "replace-me"]
+  "categories": ["developer-tools", "git"]
 }

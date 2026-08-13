@@ -121,9 +121,9 @@ export const buildOpenApiDocument = (config: AppConfig, registry: ToolRegistry):
   return {
     openapi: '3.1.0',
     info: {
-      title: 'Agent Tool Server Template',
+      title: 'Agent Tool Server Git Optimizer',
       version: config.service.version,
-      description: 'Replaceable tool server infrastructure generated from one typed tool registry.',
+      description: 'Noise-filtered local Git diff summaries for coding agents.',
     },
     servers: [{ url: config.service.publicBaseUrl ?? `http://localhost:${config.http.port}` }],
     security: config.auth.mode === 'disabled' ? [] : [{ bearerAuth: [] }],
