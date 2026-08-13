@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { badRequest } from '../errors.js';
+import { AppError, badRequest } from '../errors.js';
 
 const execFileAsync = promisify(execFile);
 const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -9,6 +9,30 @@ const generatedSegments = new Set(['build', 'coverage', 'dist', 'generated', 'ou
 const generatedAsset =
   /(?:\.map|\.min\.(?:css|js)|\.(?:gif|ico|jpe?g|pdf|png|svg|webp|woff2?|ttf))$/i;
 const safeRef = /^(?!-)[A-Za-z0-9./_@~^+-]+$/;
+const operationalGitErrorCodes = new Set(['EACCES', 'EAGAIN', 'EMFILE', 'ENOENT', 'ENOMEM']);
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const isOperationalGitFailure = (error: unknown): boolean => {
+  if (!isObjectRecord(error)) return false;
+  const code = typeof error.code === 'string' ? error.code : undefined;
+  if (code && operationalGitErrorCodes.has(code)) return true;
+  const signal = typeof error.signal === 'string' ? error.signal : undefined;
+  const killed = error.killed === true;
+  return killed || signal === 'SIGTERM';
+};
+
+const toGitExecutionError = (error: unknown): AppError => {
+  if (isOperationalGitFailure(error)) {
+    return new AppError('internal_error', 'Unable to read the requested Git diff');
+  }
+  const details =
+    isObjectRecord(error) && typeof error.stderr === 'string' && error.stderr.trim().length > 0
+      ? error.stderr.trim()
+      : undefined;
+  return badRequest('Unable to read the requested Git diff', details ? { git: details } : undefined);
+};
 
 export interface DiffSummary {
   readonly summary: string;
@@ -36,14 +60,7 @@ const runGit: GitRunner = async (arguments_, cwd) => {
     });
     return stdout;
   } catch (error) {
-    const details =
-      typeof error === 'object' && error !== null && 'stderr' in error
-        ? String(error.stderr).trim()
-        : undefined;
-    throw badRequest(
-      'Unable to read the requested Git diff',
-      details ? { git: details } : undefined,
-    );
+    throw toGitExecutionError(error);
   }
 };
 

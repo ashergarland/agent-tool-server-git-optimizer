@@ -73,6 +73,16 @@ describe('Git diff service', () => {
     ).rejects.toMatchObject({ code: 'bad_request' });
   });
 
+  it('surfaces operational git failures as internal errors', async () => {
+    const services = createServices(testConfig());
+    await expect(
+      services.git.summarizeCommitDiff({
+        repositoryPath: '/definitely/missing/repository',
+        targetRef: 'HEAD',
+      }),
+    ).rejects.toMatchObject({ code: 'internal_error' });
+  });
+
   it('wires an injectable application', async () => {
     const application = createApplication({ config: testConfig() });
     expect(application.registry.list()).toHaveLength(1);
