@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createMcpServer } from '../../src/mcp/server.js';
+import type { GitRunner } from '../../src/services/git.js';
 import { createServices } from '../../src/services/index.js';
 import { createToolRegistry } from '../../src/tools/registry.js';
 import { testConfig } from '../helpers/config.js';
@@ -13,7 +14,8 @@ afterEach(async () => Promise.all(closeables.splice(0).map((value) => value.clos
 describe('MCP adapter', () => {
   it('lists and invokes tools from the shared registry', async () => {
     const config = testConfig();
-    const server = createMcpServer(config, createToolRegistry(), createServices(config), {
+    const runner: GitRunner = async () => '';
+    const server = createMcpServer(config, createToolRegistry(), createServices(config, runner), {
       requestId: 'mcp-test',
       principal: 'test-client',
     });

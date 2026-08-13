@@ -1,19 +1,21 @@
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHttpServer } from '../../src/server/http.js';
+import type { GitRunner } from '../../src/services/git.js';
 import { createServices } from '../../src/services/index.js';
 import { createToolRegistry } from '../../src/tools/registry.js';
 import { testConfig } from '../helpers/config.js';
 
 const servers: ReturnType<typeof createHttpServer>[] = [];
 const apiKey = 'test-api-key-that-is-at-least-32-characters';
+const runner: GitRunner = async () => '';
 
 const server = (overrides: Record<string, unknown> = {}) => {
   const config = testConfig(overrides);
   const app = createHttpServer({
     config,
     logger: pino({ level: 'silent' }),
-    services: createServices(config),
+    services: createServices(config, runner),
     registry: createToolRegistry(),
   });
   servers.push(app);
