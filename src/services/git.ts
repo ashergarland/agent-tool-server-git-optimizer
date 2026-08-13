@@ -8,7 +8,7 @@ const lockfiles = new Set(['package-lock.json', 'pnpm-lock.yaml']);
 const generatedSegments = new Set(['build', 'coverage', 'dist', 'generated', 'out', 'vendor']);
 const generatedAsset =
   /(?:\.map|\.min\.(?:css|js)|\.(?:gif|ico|jpe?g|pdf|png|svg|webp|woff2?|ttf))$/i;
-const safeRef = /^(?!-)\S+$/;
+const safeRef = /^(?!-)[A-Za-z0-9./_@~^+-]+$/;
 
 export interface DiffSummary {
   readonly summary: string;

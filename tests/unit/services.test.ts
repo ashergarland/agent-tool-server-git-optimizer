@@ -6,7 +6,8 @@ import { testConfig } from '../helpers/config.js';
 
 describe('Git diff service', () => {
   it('summarizes source changes and filters noisy files', async () => {
-    const runner: GitRunner = async (arguments_) => {
+    const runner: GitRunner = async (arguments_, cwd) => {
+      expect(cwd).toBe('/repo');
       if (arguments_.includes('rev-parse')) return 'parent-sha\n';
       if (arguments_.includes('--name-status')) {
         return [
