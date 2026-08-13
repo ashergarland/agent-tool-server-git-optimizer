@@ -73,6 +73,17 @@ describe('Git diff service', () => {
     ).rejects.toMatchObject({ code: 'bad_request' });
   });
 
+  it('reports Git command failures as bad requests', async () => {
+    const services = createServices(testConfig());
+    const result = services.git.summarizeCommitDiff({
+      repositoryPath: process.cwd(),
+      baseRef: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+      targetRef: 'missing-ref-for-test',
+    });
+    await expect(result).rejects.toHaveProperty('code', 'bad_request');
+    await expect(result).rejects.toHaveProperty('details.git');
+  });
+
   it('wires an injectable application', async () => {
     const application = createApplication({ config: testConfig() });
     expect(application.registry.list()).toHaveLength(1);
