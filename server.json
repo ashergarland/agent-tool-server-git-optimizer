@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ashergarland/agent-tool-server-template",
+  "description": "Replace this description with the capability supplied by your tool server.",
+  "repository": {
+    "url": "https://github.com/ashergarland/agent-tool-server-template",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "agent-tool-server-template",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://tools.example.com/mcp"
+    }
+  ]
+}

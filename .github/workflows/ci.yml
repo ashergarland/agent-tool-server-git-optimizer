@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+      - run: npm run build
+      - run: npm run openapi:emit
+      - run: npm run metadata:validate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi
+          path: openapi.json
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: agent-tool-server-template:test
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          API_KEY='ci-only-key-0000000000000000000000000000000000000000000000000000'
+          docker run --rm -d --name tool-server -p 8080:8080 \
+            -e API_KEYS="$API_KEY" agent-tool-server-template:test
+          trap 'docker logs tool-server; docker stop tool-server' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:8080/health && break
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8080/version
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            http://127.0.0.1:8080/tools)" = 401
+          curl --fail --silent -H "x-api-key: $API_KEY" http://127.0.0.1:8080/tools
+          test "$(docker inspect --format '{{.Config.User}}' tool-server)" = node
+
+  bicep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bicep
+        run: az bicep install
+      - name: Build and lint Bicep
+        run: |
+          az bicep build --file infra/main.bicep
+          az bicep lint --file infra/main.bicep
+          az bicep build-params --file infra/parameters/dev.bicepparam

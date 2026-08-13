@@ -1,0 +1,6 @@
+{
+  "id": "agent-tool-server-template",
+  "repository": "https://github.com/ashergarland/agent-tool-server-template",
+  "serverMetadata": "server.json",
+  "categories": ["developer-tools", "replace-me"]
+}

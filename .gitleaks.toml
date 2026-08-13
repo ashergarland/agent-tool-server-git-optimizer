@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "README API-key placeholder from earlier commits"
+paths = ['''README\.md''']
+regexTarget = "match"
+regexes = ['''replace-with-a-random-32-character-key''']
