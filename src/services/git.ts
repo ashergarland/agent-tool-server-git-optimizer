@@ -30,7 +30,10 @@ const toGitExecutionError = (error: unknown): AppError => {
     isObjectRecord(error) && typeof error.stderr === 'string' && error.stderr.trim().length > 0
       ? error.stderr.trim()
       : undefined;
-  return badRequest('Unable to read the requested Git diff', details ? { git: details } : undefined);
+  return badRequest(
+    'Unable to read the requested Git diff',
+    details ? { git: details } : undefined,
+  );
 };
 
 export interface DiffSummary {
