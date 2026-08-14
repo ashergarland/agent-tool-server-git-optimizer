@@ -30,52 +30,34 @@ export const defineTool = <InputSchema extends z.ZodType, OutputSchema extends z
   definition: ToolDefinition<InputSchema, OutputSchema>,
 ): ToolDefinition<InputSchema, OutputSchema> => definition;
 
-const itemSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  status: z.enum(['pending', 'complete']),
+const fileSummarySchema = z.object({
+  path: z.string(),
+  change: z.enum(['Added', 'Deleted', 'Modified']),
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  details: z.string(),
 });
 
-export const listItemsTool = defineTool({
-  name: 'example_list_items',
-  title: 'List example items',
-  summary: 'List items from the replaceable example provider.',
-  description: 'Demonstrates a read-only tool crossing tool, service, and provider boundaries.',
+export const summarizeCommitDiffTool = defineTool({
+  name: 'summarize_commit_diff',
+  title: 'Summarize a commit diff',
+  summary: 'Summarize meaningful local Git changes while filtering generated noise.',
+  description:
+    'Runs a local Git diff, ignores whitespace-only changes, lockfiles, and generated assets, and returns a dense per-file changelog.',
   kind: 'read',
-  inputSchema: z.object({}),
-  outputSchema: z.object({ items: z.array(itemSchema) }),
-  handler: async (_input, services) => ({ items: [...(await services.items.list())] }),
-});
-
-export const getItemTool = defineTool({
-  name: 'example_get_item',
-  title: 'Get an example item',
-  summary: 'Get one item by identifier.',
-  description: 'Demonstrates validated input and safe not-found error mapping.',
-  kind: 'read',
-  inputSchema: z.object({ id: z.string().min(1).max(100) }),
-  outputSchema: z.object({ item: itemSchema }),
-  handler: async (input, services) => ({ item: await services.items.get(input.id) }),
-});
-
-export const updateItemTool = defineTool({
-  name: 'example_update_item',
-  title: 'Update an example item',
-  summary: 'Preview or update an item status.',
-  description: 'Demonstrates dry-run and explicit-confirmation mutation guardrails.',
-  kind: 'write',
   inputSchema: z.object({
-    id: z.string().min(1).max(100),
-    status: z.enum(['pending', 'complete']),
-    dryRun: z.boolean().default(false),
-    confirm: z.boolean().default(false),
+    repositoryPath: z.string().min(1).max(4096).default('.'),
+    baseRef: z.string().min(1).max(255).optional(),
+    targetRef: z.string().min(1).max(255).default('HEAD'),
   }),
-  outputSchema: z.object({ item: itemSchema, performed: z.boolean(), dryRun: z.boolean() }),
-  handler: (input, services) => services.items.updateStatus(input),
+  outputSchema: z.object({
+    summary: z.string(),
+    files: z.array(fileSummarySchema),
+    ignoredFiles: z.array(z.string()),
+  }),
+  handler: (input, services) => services.git.summarizeCommitDiff(input),
 });
 
 export const toolDefinitions = [
-  listItemsTool,
-  getItemTool,
-  updateItemTool,
+  summarizeCommitDiffTool,
 ] as const satisfies readonly ToolDefinition[];

@@ -1,7 +1,7 @@
 {
-  "name": "agent-tool-server-template",
+  "name": "agent-tool-server-git-optimizer",
   "version": "0.1.0",
-  "description": "Reusable Node.js template for typed MCP and HTTP agent tool servers.",
+  "description": "Local Git diff summarization for coding agents.",
   "license": "MIT",
   "type": "module",
   "private": true,
@@ -27,7 +27,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ashergarland/agent-tool-server-template.git"
+    "url": "git+https://github.com/ashergarland/agent-tool-server-git-optimizer.git"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

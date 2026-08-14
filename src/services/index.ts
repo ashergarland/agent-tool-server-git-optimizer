@@ -1,14 +1,13 @@
 import type { AppConfig } from '../config/index.js';
-import type { ExampleProvider } from '../provider/types.js';
+import { GitService, type GitRunner } from './git.js';
 import { Guardrails } from './guardrails.js';
-import { ItemService } from './items.js';
 
 export interface Services {
-  readonly items: ItemService;
+  readonly git: GitService;
   readonly guardrails: Guardrails;
 }
 
-export const createServices = (config: AppConfig, provider: ExampleProvider): Services => {
+export const createServices = (config: AppConfig, gitRunner?: GitRunner): Services => {
   const guardrails = new Guardrails(config);
-  return { guardrails, items: new ItemService(provider, guardrails) };
+  return { guardrails, git: new GitService(gitRunner) };
 };
