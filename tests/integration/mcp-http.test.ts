@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import pino from 'pino';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { createHttpServer } from '../../src/server/http.js';
+import { createGitClient, type GitClient } from '../../src/services/git-exec.js';
 import { createServices, type Services } from '../../src/services/index.js';
 import { serverInstructions } from '../../src/tools/definitions.js';
 import { createToolRegistry } from '../../src/tools/registry.js';
@@ -94,5 +95,60 @@ describe('Streamable HTTP MCP transport', () => {
     expect(refused.isError).toBe(true);
     const content = refused.content as { text: string }[];
     expect(JSON.parse(content[0]?.text ?? '{}')).toMatchObject({ code: 'forbidden' });
+  });
+});
+
+describe('caller disconnect', () => {
+  it('cancels in-flight Git work instead of holding a worker until timeout', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await seedRepository(repository);
+
+    let observedAbort: ((value: boolean) => void) | undefined;
+    const aborted = new Promise<boolean>((resolve) => {
+      observedAbort = resolve;
+    });
+    const config = testConfig({ GIT_LOCAL_PATHS_ENABLED: 'false', GIT_ALLOWED_ROOTS: root });
+    const real = createGitClient(config);
+    const gitClient: GitClient = {
+      run: async (options) => {
+        // Report the very first cancellation the handler propagates.
+        options.signal?.addEventListener('abort', () => observedAbort?.(true), { once: true });
+        if (options.args.includes('--name-status')) {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+        return real.run(options);
+      },
+      probe: () => real.probe(),
+      stats: () => real.stats(),
+      close: () => real.close(),
+    };
+    const services = createServices(config, { gitClient });
+    serviceInstances.push(services);
+
+    const app = createHttpServer({
+      config,
+      logger: pino({ level: 'silent' }),
+      services,
+      registry: createToolRegistry(),
+    });
+    closeables.push(app);
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address();
+    if (typeof address === 'string' || address === null) throw new Error('no address');
+
+    const controller = new AbortController();
+    const pending = fetch(`http://127.0.0.1:${address.port}/tools/summarize_commit_diff`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify({ repositoryPath: repository.path, targetRef: 'HEAD' }),
+    }).catch(() => undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    controller.abort();
+    await pending;
+
+    await expect(aborted).resolves.toBe(true);
   });
 });

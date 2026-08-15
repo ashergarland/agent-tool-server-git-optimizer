@@ -157,14 +157,17 @@ export const createHttpServer = ({
     protectedApp.post<{ Params: { toolName: string }; Body: unknown }>(
       '/tools/:toolName',
       protectedRouteOptions,
-      async (request) => {
+      async (request, reply) => {
         const tool = registry.get(request.params.toolName);
         const principal = request.principal?.id ?? 'anonymous';
         const invokedAt = Date.now();
-        // Cancels queued and running Git work when the caller disconnects.
+        // Cancels queued and running Git work when the caller disconnects. Fastify consumes the
+        // request body before this handler runs, so `request.raw` has already closed; the reply
+        // stream is the only reliable disconnect signal.
         const controller = new AbortController();
-        request.raw.on('close', () => {
-          if (!request.raw.readableEnded) controller.abort();
+        let settled = false;
+        reply.raw.on('close', () => {
+          if (!settled && !reply.raw.writableEnded) controller.abort();
         });
         request.log.info({
           event: 'tool.invoke',
@@ -197,6 +200,8 @@ export const createHttpServer = ({
             durationMs: Date.now() - invokedAt,
           });
           throw error;
+        } finally {
+          settled = true;
         }
       },
     );

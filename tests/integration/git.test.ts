@@ -265,6 +265,23 @@ describe('summarize_commit_diff over real repositories', () => {
     await services.close();
   });
 
+  it('summarizes through an explicitly supported bare repository', async () => {
+    const root = await temporaryDirectory();
+    const source = await initRepository(join(root, 'source'));
+    await seedRepository(source);
+    await source.git('clone', '--bare', '--quiet', source.path, join(root, 'mirror.git'));
+    const services = servicesFor(root);
+
+    const result = await services.git.summarizeCommitDiff({
+      repositoryPath: join(root, 'mirror.git'),
+      targetRef: 'HEAD',
+      whitespace: 'preserve',
+    });
+    expect(result.files.map((file) => file.path)).toEqual(['src/app.ts']);
+    expect(result.ignoredFiles.sort()).toEqual(['assets/logo.png', 'package-lock.json']);
+    await services.close();
+  });
+
   it('confines the tool to configured roots and reports readiness accordingly', async () => {
     const root = await temporaryDirectory();
     const outside = await temporaryDirectory();

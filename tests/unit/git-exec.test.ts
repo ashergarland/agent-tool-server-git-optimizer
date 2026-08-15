@@ -1,3 +1,5 @@
+import { readdir, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
@@ -149,5 +151,24 @@ describe('Git execution bounds', () => {
     await expect(client.run({ cwd: root, args: ['rev-parse', 'HEAD'] })).rejects.toMatchObject({
       code: 'busy',
     });
+  });
+
+  it('removes only its own private directory on shutdown', async () => {
+    const root = await temporaryDirectory();
+    await initRepository(root);
+    const client = createGitClient(testConfig({ GIT_ALLOWED_ROOTS: root }));
+    await client.run({ cwd: root, args: ['rev-parse', '--git-dir'] });
+
+    const before = await readdir(tmpdir());
+    const owned = before.filter((entry) => entry.startsWith('git-optimizer-'));
+    expect(owned.length).toBeGreaterThan(0);
+
+    await client.close();
+    // The shared temporary directory itself must survive, along with unrelated entries.
+    await expect(stat(tmpdir())).resolves.toBeDefined();
+    const after = new Set(await readdir(tmpdir()));
+    for (const entry of before.filter((name) => !name.startsWith('git-optimizer-'))) {
+      expect(after.has(entry)).toBe(true);
+    }
   });
 });

@@ -145,7 +145,6 @@ interface EnvironmentPaths {
   readonly home: string;
   readonly temporaryDirectory: string;
 }
-
 export class ChildProcessGitClient implements GitClient {
   private readonly limits: GitLimits;
   private readonly children = new Set<ChildProcess>();
@@ -186,6 +185,7 @@ export class ChildProcessGitClient implements GitClient {
   public async close(): Promise<void> {
     this.shuttingDown = true;
     for (const child of this.children) child.kill('SIGKILL');
+    // Only ever remove a directory this client created; never the shared temporary directory.
     const paths = await this.environmentPaths?.catch(() => undefined);
     if (paths) await rm(paths.home, { force: true, recursive: true }).catch(() => undefined);
     this.children.clear();
@@ -199,11 +199,24 @@ export class ChildProcessGitClient implements GitClient {
     return { executable, version };
   }
 
-  /** Directories Git may write to, kept away from any repository or the read-only root. */
+  /**
+   * A private directory Git may use as HOME and temporary space. Falling back to the shared
+   * temporary directory is never acceptable: it would make the isolated config paths predictable
+   * and world-writable, and it would put the shared directory in the deletion path on shutdown.
+   */
   private paths(): Promise<EnvironmentPaths> {
     this.environmentPaths ??= mkdtemp(join(tmpdir(), 'git-optimizer-'))
       .then((home) => ({ home, temporaryDirectory: home }))
-      .catch(() => ({ home: tmpdir(), temporaryDirectory: tmpdir() }));
+      .catch((cause: unknown) => {
+        this.environmentPaths = undefined;
+        throw new AppError(
+          'internal_error',
+          'The tool server could not create a private temporary directory for Git',
+          undefined,
+          false,
+          cause,
+        );
+      });
     return this.environmentPaths;
   }
 
@@ -326,7 +339,14 @@ export class ChildProcessGitClient implements GitClient {
           }
           const code = isRecord(error) ? error.code : undefined;
           if (code === 'ENOENT') {
-            reject(new AppError('internal_error', 'The Git executable is unavailable'));
+            // spawn reports a missing executable and an unusable cwd identically.
+            void isExecutableFile(executable).then((present) => {
+              reject(
+                present
+                  ? badRequest('The requested path is not a readable Git repository')
+                  : new AppError('internal_error', 'The Git executable is unavailable'),
+              );
+            });
             return;
           }
           if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {

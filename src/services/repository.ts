@@ -1,4 +1,4 @@
-import { realpath } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 import type { AppConfig } from '../config/index.js';
 import { badRequest, forbidden, notFound } from '../errors.js';
@@ -70,6 +70,11 @@ export class RepositoryBoundary {
     });
     if (!canonicalRoots.some((root) => isWithin(root, candidate))) {
       throw forbidden('repositoryPath resolves outside the configured repository roots');
+    }
+    // Git is about to run with this path as its working directory.
+    const info = await stat(candidate).catch(() => undefined);
+    if (!info?.isDirectory()) {
+      throw badRequest('repositoryPath must be a directory containing a Git repository');
     }
 
     const layout = await this.git.run({

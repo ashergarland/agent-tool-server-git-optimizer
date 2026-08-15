@@ -86,7 +86,7 @@ describe('repository boundary', () => {
     await client.close();
   });
 
-  it('rejects missing paths, non-repositories, and control characters', async () => {
+  it('rejects missing paths, files, non-repositories, and control characters', async () => {
     const root = await temporaryDirectory();
     await mkdir(join(root, 'plain'), { recursive: true });
     await writeFile(join(root, 'plain', 'file.txt'), 'x\n', 'utf8');
@@ -98,6 +98,10 @@ describe('repository boundary', () => {
     await expect(boundary.resolveRepository(join(root, 'plain'))).rejects.toMatchObject({
       code: 'bad_request',
     });
+    // A regular file must never become a Git working directory.
+    await expect(boundary.resolveRepository(join(root, 'plain', 'file.txt'))).rejects.toMatchObject(
+      { code: 'bad_request' },
+    );
     await expect(boundary.resolveRepository('bad\u0000path')).rejects.toMatchObject({
       code: 'bad_request',
     });

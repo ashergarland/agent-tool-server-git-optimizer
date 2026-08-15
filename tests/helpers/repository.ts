@@ -29,7 +29,12 @@ export const temporaryDirectory = async (prefix = 'ato-fixture-'): Promise<strin
 
 export const removeTemporaryDirectories = async (): Promise<void> => {
   await Promise.all(
-    created.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+    created.splice(0).map((directory) =>
+      // A cancelled Git child can still hold a handle briefly on Windows.
+      rm(directory, { force: true, recursive: true, maxRetries: 10, retryDelay: 50 }).catch(
+        () => undefined,
+      ),
+    ),
   );
 };
 
