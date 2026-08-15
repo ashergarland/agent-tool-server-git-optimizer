@@ -8,6 +8,21 @@ IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short=12 HEAD)}"
 SECRET_NAME="tool-server-api-key"
 BOOTSTRAP_PRINCIPAL_OBJECT_ID="$(az ad signed-in-user show --query id -o tsv)"
 
+# The tool server can analyze nothing without a read-only repository share, so refuse to deploy
+# an app that would only ever report itself as not ready.
+REPOSITORY_SOURCE="${REPOSITORY_SOURCE:-}"
+if [[ -z "$REPOSITORY_SOURCE" ]]; then
+  cat >&2 <<'USAGE'
+REPOSITORY_SOURCE is required. Provide a read-only share that this deployment may mount, for example:
+
+  export REPOSITORY_SOURCE='{"kind":"nfsAzureFile","server":"<account>.file.core.windows.net","shareName":"repositories"}'
+  export REPOSITORY_SOURCE='{"kind":"azureFile","accountName":"<account>","shareName":"repositories","accountKeySecretUri":"<key vault secret url>"}'
+
+Synchronize repositories into that share outside this service. This server never clones or fetches.
+USAGE
+  exit 1
+fi
+
 az bicep build --file infra/main.bicep >/dev/null
 
 az deployment sub create \
@@ -25,6 +40,7 @@ RESOURCE_GROUP="$(az deployment sub show --name "${DEPLOYMENT_NAME}-base" --quer
 REGISTRY_NAME="$(az deployment sub show --name "${DEPLOYMENT_NAME}-base" --query properties.outputs.registryName.value -o tsv)"
 REGISTRY_SERVER="$(az deployment sub show --name "${DEPLOYMENT_NAME}-base" --query properties.outputs.registryLoginServer.value -o tsv)"
 KEY_VAULT_NAME="$(az deployment sub show --name "${DEPLOYMENT_NAME}-base" --query properties.outputs.keyVaultName.value -o tsv)"
+printf 'Provisioned shared resources in %s.\n' "$RESOURCE_GROUP"
 
 if [[ -z "${API_KEY:-}" ]]; then
   API_KEY="$(openssl rand -hex 32)"
@@ -65,4 +81,12 @@ az deployment sub create \
     deployApp=true \
     bootstrapPrincipalObjectId="$BOOTSTRAP_PRINCIPAL_OBJECT_ID" \
     containerImage="${REGISTRY_SERVER}/agent-tool-server:${IMAGE_TAG}" \
+    repositorySource="$REPOSITORY_SOURCE" \
+    repositoryMountPath="${REPOSITORY_MOUNT_PATH:-/repositories}" \
   --only-show-errors
+
+SKIPPED="$(az deployment sub show --name "${DEPLOYMENT_NAME}-app" --query properties.outputs.appSkippedReason.value -o tsv)"
+if [[ -n "$SKIPPED" ]]; then
+  printf 'The application was not deployed: %s\n' "$SKIPPED" >&2
+  exit 1
+fi

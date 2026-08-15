@@ -5,8 +5,8 @@
 ## Validation
 
 - [ ] Formatting, linting, typechecking, tests/coverage, and build pass
-- [ ] Container smoke test passes
+- [ ] Container smoke test invokes the real tool against a fixture repository
 - [ ] Bicep builds and lints
 - [ ] Metadata and generated OpenAPI are valid
 - [ ] No secrets, copied deployment identifiers, or unnecessary privileges were added
-- [ ] Write tools include dry-run and confirmation guardrails
+- [ ] Repository confinement, Git isolation, and output bounds were not weakened

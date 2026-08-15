@@ -5,7 +5,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Logger } from 'pino';
 import type { AppConfig } from '../config/index.js';
-import { AppError } from '../errors.js';
+import { AppError, toAppError } from '../errors.js';
 import { createMcpServer } from '../mcp/server.js';
 import { buildOpenApiDocument } from '../openapi/document.js';
 import type { Services } from '../services/index.js';
@@ -27,6 +27,8 @@ export interface HttpServerDeps {
   readonly services: Services;
   readonly registry: ToolRegistry;
 }
+
+const readinessCacheMs = 2000;
 
 export const createHttpServer = ({
   config,
@@ -75,19 +77,38 @@ export const createHttpServer = ({
     uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
   }));
 
-  app.get('/version', () => ({
-    service: config.service.name,
-    version: config.service.version,
-    gitSha: config.service.gitSha,
-    node: process.version,
-    environment: config.env,
-    capabilities: {
-      transports: ['stdio', 'streamable-http', 'http-openapi'],
-      mutationsEnabled: config.guardrails.mutationsEnabled,
-      confirmationRequired: config.guardrails.confirmationRequired,
-      authMode: config.auth.mode,
-    },
-  }));
+  let readinessCache: { at: number; value: Awaited<ReturnType<Services['readiness']>> } | undefined;
+  app.get('/ready', async (_request, reply) => {
+    const now = Date.now();
+    if (!readinessCache || now - readinessCache.at > readinessCacheMs) {
+      readinessCache = { at: now, value: await services.readiness() };
+    }
+    const report = readinessCache.value;
+    void reply.status(report.ready ? 200 : 503);
+    return {
+      status: report.ready ? ('ready' as const) : ('not-ready' as const),
+      service: config.service.name,
+      checks: report.checks,
+    };
+  });
+
+  app.get('/version', async () => {
+    const probe = await services.gitClient.probe().catch(() => undefined);
+    return {
+      service: config.service.name,
+      version: config.service.version,
+      gitSha: config.service.gitSha,
+      node: process.version,
+      environment: config.env,
+      git: { version: probe?.version ?? null },
+      capabilities: {
+        transports: ['stdio', 'streamable-http', 'http-openapi'],
+        readOnly: true,
+        repositoryRootsConfigured: config.git.allowedRoots.length,
+        authMode: config.auth.mode,
+      },
+    };
+  });
 
   const openApi = buildOpenApiDocument(config, registry);
   app.get('/openapi.json', () => openApi);
@@ -104,7 +125,10 @@ export const createHttpServer = ({
       request.principal = principal;
       const decision = limiter.consume(principal.id);
       void reply.header('x-ratelimit-remaining', String(decision.remaining));
-      if (!decision.allowed) throw rateLimitError(reply, decision);
+      if (!decision.allowed) {
+        request.log.warn({ event: 'auth.rate_limited', principal: principal.id });
+        throw rateLimitError(reply, decision);
+      }
     };
     const protectedRouteOptions = {
       config: {
@@ -124,6 +148,7 @@ export const createHttpServer = ({
         summary: tool.summary,
         description: tool.description,
         kind: tool.kind,
+        annotations: tool.annotations,
         inputSchema: tool.inputJsonSchema,
         outputSchema: tool.outputJsonSchema,
       })),
@@ -132,34 +157,68 @@ export const createHttpServer = ({
     protectedApp.post<{ Params: { toolName: string }; Body: unknown }>(
       '/tools/:toolName',
       protectedRouteOptions,
-      async (request) => {
+      async (request, reply) => {
         const tool = registry.get(request.params.toolName);
         const principal = request.principal?.id ?? 'anonymous';
         const invokedAt = Date.now();
-        request.log.info({ event: 'tool.invoke', tool: tool.name, kind: tool.kind });
-        const result = await tool.invoke(request.body ?? {}, services, {
-          requestId: request.id,
-          principal,
+        // Cancels queued and running Git work when the caller disconnects. Fastify consumes the
+        // request body before this handler runs, so `request.raw` has already closed; the reply
+        // stream is the only reliable disconnect signal.
+        const controller = new AbortController();
+        let settled = false;
+        reply.raw.on('close', () => {
+          if (!settled && !reply.raw.writableEnded) controller.abort();
         });
         request.log.info({
-          event: 'tool.result',
+          event: 'tool.invoke',
           tool: tool.name,
-          durationMs: Date.now() - invokedAt,
+          kind: tool.kind,
+          queueDepth: services.gitClient.stats().queued,
         });
-        return { tool: tool.name, requestId: request.id, result };
+        try {
+          const result = await tool.invoke(request.body ?? {}, services, {
+            requestId: request.id,
+            principal,
+            signal: controller.signal,
+          });
+          const summary = result as { returnedFiles?: number; truncated?: boolean };
+          request.log.info({
+            event: 'tool.result',
+            tool: tool.name,
+            outcome: 'success',
+            durationMs: Date.now() - invokedAt,
+            returnedFiles: summary.returnedFiles,
+            truncated: summary.truncated,
+          });
+          return { tool: tool.name, requestId: request.id, result };
+        } catch (error) {
+          request.log.warn({
+            event: 'tool.result',
+            tool: tool.name,
+            outcome: 'error',
+            code: toAppError(error).code,
+            durationMs: Date.now() - invokedAt,
+          });
+          throw error;
+        } finally {
+          settled = true;
+        }
       },
     );
 
     const handleMcp = async (request: FastifyRequest<{ Body: unknown }>, reply: FastifyReply) => {
       const transport = new StreamableHTTPServerTransport();
+      const controller = new AbortController();
       const server = createMcpServer(config, registry, services, {
         requestId: request.id,
         principal: request.principal?.id ?? 'anonymous',
+        signal: controller.signal,
       });
       let closed = false;
       const close = async (): Promise<void> => {
         if (closed) return;
         closed = true;
+        controller.abort();
         await Promise.allSettled([transport.close(), server.close()]);
       };
       reply.raw.on('close', () => {

@@ -25,7 +25,8 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm run test:coverage
+      - name: Test with coverage and real Git
+        run: npm run test:coverage
       - run: npm run build
       - run: npm run openapi:emit
       - run: npm run metadata:validate
@@ -44,23 +45,72 @@ jobs:
           context: .
           load: true
           push: false
-          tags: agent-tool-server-template:test
-      - name: Smoke test
+          tags: agent-tool-server-git-optimizer:test
+      - name: Build a fixture repository to analyze
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/repositories/fixture"
+          cd "$RUNNER_TEMP/repositories/fixture"
+          git init --quiet --initial-branch main
+          git config user.email fixture@example.invalid
+          git config user.name 'CI Fixture'
+          printf 'export const value = 1;\n' > app.ts
+          git add --all
+          git commit --quiet --message 'root'
+          printf 'export function value(): number {\n  return 2;\n}\n' > app.ts
+          printf '{"lockfileVersion": 3}\n' > package-lock.json
+          git add --all
+          git commit --quiet --message 'change'
+          chmod -R a+rX "$RUNNER_TEMP/repositories"
+      - name: Smoke test the real tool through the container
         run: |
           set -euo pipefail
           API_KEY='ci-only-key-0000000000000000000000000000000000000000000000000000'
-          docker run --rm -d --name tool-server -p 8080:8080 \
-            -e API_KEYS="$API_KEY" agent-tool-server-template:test
-          trap 'docker logs tool-server; docker stop tool-server' EXIT
-          for attempt in {1..30}; do
-            curl --fail --silent http://127.0.0.1:8080/health && break
+          docker run --rm -d --name tool-server \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -p 8080:8080 \
+            -v "$RUNNER_TEMP/repositories:/repositories:ro" \
+            -e API_KEYS="$API_KEY" \
+            -e GIT_ALLOWED_ROOTS=/repositories \
+            -e GIT_TRUST_REPOSITORY_OWNERSHIP=true \
+            agent-tool-server-git-optimizer:test
+          trap 'docker logs tool-server || true; docker stop tool-server || true' EXIT
+
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/ready > /dev/null; then break; fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8080/version
+
+          echo '--- readiness must pass with a mounted repository root'
+          curl --fail --silent http://127.0.0.1:8080/ready | tee /dev/stderr | grep -q '"status":"ready"'
+
+          echo '--- the image must ship a usable Git'
+          curl --fail --silent http://127.0.0.1:8080/version | grep -qE '"version":"[0-9]+\.[0-9]+'
+
+          echo '--- protected routes must reject anonymous callers'
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
             http://127.0.0.1:8080/tools)" = 401
-          curl --fail --silent -H "x-api-key: $API_KEY" http://127.0.0.1:8080/tools
+
+          echo '--- the real tool must summarize the fixture repository'
+          result="$(curl --fail --silent -X POST \
+            -H "x-api-key: $API_KEY" -H 'content-type: application/json' \
+            -d '{"repositoryPath":"/repositories/fixture","targetRef":"HEAD"}' \
+            http://127.0.0.1:8080/tools/summarize_commit_diff)"
+          echo "$result"
+          echo "$result" | grep -q '"path":"app.ts"'
+          echo "$result" | grep -q '"ignoredFiles":\["package-lock.json"\]'
+          echo "$result" | grep -q '"truncated":false'
+
+          echo '--- paths outside the configured root must be refused'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST \
+            -H "x-api-key: $API_KEY" -H 'content-type: application/json' \
+            -d '{"repositoryPath":"/app","targetRef":"HEAD"}' \
+            http://127.0.0.1:8080/tools/summarize_commit_diff)" = 403
+
+          echo '--- the container must not run as root'
           test "$(docker inspect --format '{{.Config.User}}' tool-server)" = node
+          test "$(docker exec tool-server id -u)" != 0
 
   bicep:
     runs-on: ubuntu-latest
