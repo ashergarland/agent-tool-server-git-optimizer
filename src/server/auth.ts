@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyRequest } from 'fastify';
 import type { AppConfig } from '../config/index.js';
 import { unauthorized } from '../errors.js';
@@ -11,9 +11,6 @@ export interface Principal {
 export interface Authenticator {
   authenticate(request: FastifyRequest): Promise<Principal>;
 }
-
-const equals = (left: Buffer, right: Buffer): boolean =>
-  left.length === right.length && timingSafeEqual(left, right);
 
 const credential = (request: FastifyRequest): string | undefined => {
   const authorization = request.headers.authorization;
@@ -30,12 +27,17 @@ class DisabledAuthenticator implements Authenticator {
   }
 }
 
+/**
+ * Compares fixed-width keyed digests rather than the raw credentials, so neither the length nor
+ * any prefix of a configured key is observable through comparison timing.
+ */
 class ApiKeyAuthenticator implements Authenticator {
-  private readonly apiKeys: ReadonlyArray<{ value: Buffer; principalId: string }>;
+  private readonly pepper = randomBytes(32);
+  private readonly digests: ReadonlyArray<{ value: Buffer; principalId: string }>;
 
   public constructor(apiKeys: readonly string[]) {
-    this.apiKeys = apiKeys.map((value, index) => ({
-      value: Buffer.from(value, 'utf8'),
+    this.digests = apiKeys.map((value, index) => ({
+      value: this.digest(value),
       principalId: `key:${index + 1}`,
     }));
   }
@@ -43,10 +45,17 @@ class ApiKeyAuthenticator implements Authenticator {
   public authenticate(request: FastifyRequest): Promise<Principal> {
     const presented = credential(request);
     if (!presented) throw unauthorized('Missing bearer token or x-api-key header');
-    const presentedValue = Buffer.from(presented, 'utf8');
-    const match = this.apiKeys.find((candidate) => equals(candidate.value, presentedValue));
+    const candidate = this.digest(presented);
+    let match: string | undefined;
+    for (const entry of this.digests) {
+      if (timingSafeEqual(entry.value, candidate)) match = entry.principalId;
+    }
     if (!match) throw unauthorized('Invalid API key');
-    return Promise.resolve({ id: match.principalId, kind: 'api-key' });
+    return Promise.resolve({ id: match, kind: 'api-key' });
+  }
+
+  private digest(value: string): Buffer {
+    return createHmac('sha256', this.pepper).update(value, 'utf8').digest();
   }
 }
 
