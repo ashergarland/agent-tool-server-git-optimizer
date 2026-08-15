@@ -54,6 +54,15 @@ class ApiKeyAuthenticator implements Authenticator {
     return Promise.resolve({ id: match, kind: 'api-key' });
   }
 
+  /**
+   * Not password hashing. These are machine-generated API keys of at least 32 characters, and the
+   * digest is never stored: it exists only in memory, keyed with a per-process random pepper, so
+   * that comparison is fixed-width and constant-time. A deliberately slow key-derivation function
+   * would add attacker-controlled CPU cost to an unauthenticated code path.
+   *
+   * CodeQL reports `js/insufficient-password-hash` here; the alert is dismissed with this
+   * reasoning, since inline suppression comments are not honoured for TypeScript.
+   */
   private digest(value: string): Buffer {
     return createHmac('sha256', this.pepper).update(value, 'utf8').digest();
   }
