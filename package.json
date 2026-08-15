@@ -1,7 +1,7 @@
 {
   "name": "agent-tool-server-git-optimizer",
   "version": "0.1.0",
-  "description": "Local Git diff summarization for coding agents.",
+  "description": "Read-only Git diff summarization for coding agents, over stdio MCP, Streamable HTTP MCP, and HTTP/OpenAPI.",
   "license": "MIT",
   "type": "module",
   "private": true,

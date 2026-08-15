@@ -1,26 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ashergarland/agent-tool-server-git-optimizer",
-  "description": "Summarizes local Git diffs while filtering lockfiles, generated assets, and whitespace noise.",
+  "description": "Read-only summaries of local Git commit and branch diffs, filtering lockfiles and generated assets.",
   "repository": {
     "url": "https://github.com/ashergarland/agent-tool-server-git-optimizer",
     "source": "github"
   },
-  "version": "0.1.0",
-  "packages": [
-    {
-      "registryType": "npm",
-      "identifier": "agent-tool-server-git-optimizer",
-      "version": "0.1.0",
-      "transport": {
-        "type": "stdio"
-      }
-    }
-  ],
-  "remotes": [
-    {
-      "type": "streamable-http",
-      "url": "https://tools.example.com/mcp"
-    }
-  ]
+  "version": "0.1.0"
 }
