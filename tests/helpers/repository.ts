@@ -41,8 +41,16 @@ export const removeTemporaryDirectories = async (): Promise<void> => {
 export class TestRepository {
   public constructor(public readonly path: string) {}
 
+  /**
+   * Fixture operations pin the same dangerous settings the server pins, so a hostile fixture
+   * configuration is only ever executed (or not) by the code under test.
+   */
   public async git(...args: string[]): Promise<string> {
-    const { stdout } = await exec('git', args, { cwd: this.path, env: fixtureEnvironment });
+    const { stdout } = await exec(
+      'git',
+      ['-c', 'core.fsmonitor=false', '-c', 'diff.external=', '-c', 'core.hooksPath=', ...args],
+      { cwd: this.path, env: fixtureEnvironment },
+    );
     return stdout;
   }
 

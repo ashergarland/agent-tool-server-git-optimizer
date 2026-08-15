@@ -1,4 +1,4 @@
-import { chmod, writeFile } from 'node:fs/promises';
+import { access, chmod, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../../src/config/index.js';
@@ -206,25 +206,23 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.commit('root');
 
     const script = join(repository.path, 'evil.sh');
-    await writeFile(
-      script,
-      `#!/bin/sh\necho pwned > "${marker.replaceAll('\\', '/')}"\n`,
-      'utf8',
-    ).catch(() => undefined);
+    await writeFile(script, `#!/bin/sh\necho pwned > "${marker.replaceAll('\\', '/')}"\n`, 'utf8');
     await chmod(script, 0o755).catch(() => undefined);
+    await repository.write('.gitattributes', '* diff=evil\n');
+    await repository.write('src/app.ts', 'export const a = 1;\n');
+    await repository.commit('hostile attributes');
+
+    // Configured only after the fixture is committed, so nothing but the code under test can
+    // ever be the process that runs the script.
     await repository.git('config', 'diff.external', script);
     await repository.git('config', 'diff.evil.textconv', script);
     await repository.git('config', 'core.fsmonitor', script);
-    await repository.write('.gitattributes', '* diff=evil\n');
-    await repository.write('src/app.ts', 'export const a = 1;\n');
-    await repository.commit('hostile config');
+    await expect(access(marker)).rejects.toBeInstanceOf(Error);
 
     const services = servicesFor(root);
     const result = await summarize(services, repository);
     expect(result.files.map((file) => file.path)).toContain('src/app.ts');
-    await expect(import('node:fs/promises').then((fs) => fs.access(marker))).rejects.toBeInstanceOf(
-      Error,
-    );
+    await expect(access(marker)).rejects.toBeInstanceOf(Error);
     await services.close();
   });
 
