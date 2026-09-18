@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact stable version to validate or recover'
+        required: true
+        type: string
+      dry_run:
+        description: 'Validate without publishing'
+        required: false
+        default: true
+        type: boolean
+      recover_github_release:
+        description: 'Create a missing GitHub Release for an existing npm version'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  # Agent Tool Platform workflow pin:
+  # 98ec8162fb11d5c04aee9e6f7b3625a472a0180d
+  release:
+    permissions:
+      contents: write
+      id-token: write
+    uses: ashergarland/agent-tool-platform/.github/workflows/capability-release.yml@98ec8162fb11d5c04aee9e6f7b3625a472a0180d
+    with:
+      version: ${{ inputs.version || '' }}
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      recover_github_release: ${{ github.event_name == 'workflow_dispatch' && inputs.recover_github_release || false }}

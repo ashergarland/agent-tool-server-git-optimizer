@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:io.github.ashergarland:agent-tool-server-git-optimizer:local-configuration:v1",
+  "title": "Git Optimizer local configuration",
+  "description": "Bounded repository access, Git execution, and result-shaping settings for the local package profile.",
+  "type": "object",
+  "properties": {
+    "GIT_ALLOWED_ROOTS": {
+      "type": "string",
+      "description": "Comma- or semicolon-separated absolute directories that may contain repositories."
+    },
+    "GIT_LOCAL_PATHS_ENABLED": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Use the launch directory as the implicit root when no explicit roots are supplied."
+    },
+    "GIT_EXECUTABLE": {
+      "type": "string",
+      "description": "Absolute path to a trusted Git 2.34 or newer executable."
+    },
+    "GIT_TRUST_REPOSITORY_OWNERSHIP": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Opt into safe.directory=* for repositories deliberately exposed by another owner."
+    },
+    "GIT_EXTRA_IGNORED_BASENAMES": {
+      "type": "string",
+      "description": "Comma-separated additional basenames to filter from review output."
+    },
+    "GIT_EXTRA_IGNORED_DIRECTORIES": {
+      "type": "string",
+      "description": "Comma-separated additional directory names to filter from review output."
+    },
+    "GIT_TIMEOUT_MS": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_CONCURRENCY": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_QUEUE_LIMIT": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_BUFFER_BYTES": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_PATCH_BYTES": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_ARGUMENT_BYTES": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_FILES": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_IGNORED_FILES": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_PATH_LENGTH": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "GIT_MAX_SUMMARY_LENGTH": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    }
+  },
+  "additionalProperties": false
+}

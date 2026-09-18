@@ -1,19 +1,18 @@
-import { buildConfig, envSchema, type AppConfig } from '../../src/config/index.js';
-
-export const apiKey = 'test-api-key-that-is-at-least-32-characters';
+import { createTestPlatformConfig } from '@agent-tool-platform/testkit';
+import { buildGitConfig, gitEnvSchema, type GitConfig } from '../../src/config/index.js';
 
 export const testConfig = (
   overrides: Record<string, unknown> = {},
   options: { cwd?: string } = {},
-): AppConfig =>
-  buildConfig(
-    envSchema.parse({
-      NODE_ENV: 'test',
-      AUTH_MODE: 'api-key',
-      API_KEYS: apiKey,
-      RATE_LIMIT_MAX: 120,
+): GitConfig =>
+  buildGitConfig(
+    createTestPlatformConfig({
+      serviceName: 'agent-tool-server-git-optimizer',
+      serviceVersion: '0.1.0-test',
+    }),
+    gitEnvSchema.parse({
       GIT_LOCAL_PATHS_ENABLED: 'true',
       ...overrides,
     }),
-    options,
+    options.cwd,
   );

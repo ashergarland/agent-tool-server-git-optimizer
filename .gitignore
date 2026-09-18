@@ -4,3 +4,4 @@ coverage/
 openapi.json
 .env
 *.log
+*.tgz

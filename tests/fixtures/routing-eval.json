@@ -1,0 +1,41 @@
+{
+  "$comment": "Capability-owned routing cases. A null expectedTool means no Git Optimizer tool should run.",
+  "cases": [
+    {
+      "id": "orient-pr",
+      "request": "Compare this pull request branch to main and tell me which files changed before I inspect source.",
+      "expectedTool": "summarize_commit_diff",
+      "reason": "A bounded commit comparison should precede AST or raw-source reads."
+    },
+    {
+      "id": "check-deployment-file",
+      "request": "Did the deployment template change between these two local commits?",
+      "expectedTool": "summarize_commit_diff",
+      "reason": "A complete changed-file inventory can establish whether a tracked path changed."
+    },
+    {
+      "id": "select-ast-input",
+      "request": "Which source declarations changed on this branch so I can select files for AST analysis?",
+      "expectedTool": "summarize_commit_diff",
+      "reason": "Git orientation should select the smallest useful AST follow-up."
+    },
+    {
+      "id": "working-tree",
+      "request": "Show and stage my uncommitted working-tree changes.",
+      "expectedTool": null,
+      "reason": "The capability compares commits and never mutates a working tree."
+    },
+    {
+      "id": "full-patch",
+      "request": "Return the exact full patch and every changed source line.",
+      "expectedTool": null,
+      "reason": "The capability returns bounded orientation, not a full patch."
+    },
+    {
+      "id": "remote-operation",
+      "request": "Clone this repository, fetch the pull request, and push a fix.",
+      "expectedTool": null,
+      "reason": "The capability never performs network or mutating Git operations."
+    }
+  ]
+}
