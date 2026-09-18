@@ -1,4 +1,4 @@
-import { access, lstat, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -28,6 +28,8 @@ describe('Platform-owned Git scratch isolation', () => {
     const ambientHome = await temporaryDirectory('git-optimizer-ambient-');
     const ambientTemp = await temporaryDirectory('git-optimizer-ambient-temp-');
     const ambientConfig = join(ambientHome, 'ambient.gitconfig');
+    const ambientObjects = join(ambientHome, 'objects');
+    await mkdir(ambientObjects);
     await writeFile(ambientConfig, '[agenttool]\n\tambient = leaked\n', 'utf8');
 
     const previous = {
@@ -37,6 +39,8 @@ describe('Platform-owned Git scratch isolation', () => {
       TMP: process.env['TMP'],
       TEMP: process.env['TEMP'],
       GIT_CONFIG_GLOBAL: process.env['GIT_CONFIG_GLOBAL'],
+      GIT_OBJECT_DIRECTORY: process.env['GIT_OBJECT_DIRECTORY'],
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: process.env['GIT_ALTERNATE_OBJECT_DIRECTORIES'],
     };
     process.env['HOME'] = ambientHome;
     process.env['USERPROFILE'] = ambientHome;
@@ -44,6 +48,8 @@ describe('Platform-owned Git scratch isolation', () => {
     process.env['TMP'] = ambientTemp;
     process.env['TEMP'] = ambientTemp;
     process.env['GIT_CONFIG_GLOBAL'] = ambientConfig;
+    process.env['GIT_OBJECT_DIRECTORY'] = ambientObjects;
+    process.env['GIT_ALTERNATE_OBJECT_DIRECTORIES'] = ambientObjects;
 
     let application: AgentToolApplication<GitConfig, CapabilityServices> | undefined;
     try {
@@ -72,6 +78,25 @@ describe('Platform-owned Git scratch isolation', () => {
       });
       expect(ambient.stdout).toBe('');
       expect(ambient.exitCode).not.toBe(0);
+
+      const result = await application.services.git.summarizeCommitDiff({
+        repositoryPath: repository.path,
+        targetRef: 'HEAD',
+        whitespace: 'preserve',
+      });
+      expect(result.files.map((file) => file.path)).toEqual(['a.txt']);
+      const objectPath = await application.services.gitClient.run({
+        cwd: repository.path,
+        args: ['rev-parse', '--path-format=absolute', '--git-path', 'objects'],
+      });
+      expect(await realpath(objectPath.stdout.trim())).toBe(
+        await realpath(join(repository.path, '.git', 'objects')),
+      );
+      const objectStores = await application.services.gitClient.run({
+        cwd: repository.path,
+        args: ['count-objects', '--verbose'],
+      });
+      expect(objectStores.stdout).not.toMatch(/^alternate: /mu);
 
       await application.start();
       await application.shutdown();

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { GitClient, GitRunOptions, GitRunResult } from '../../src/services/git-exec.js';
 
 export type FakeHandler = (
@@ -17,7 +18,10 @@ export const fakeGitClient = (handler: FakeHandler, version = '2.49.0'): GitClie
 
 export const emptyGitClient = (topLevel = process.cwd()): GitClient =>
   fakeGitClient((options) => {
-    if (options.args.includes('--is-bare-repository')) return `false\n${topLevel}/.git\n`;
+    if (options.args.includes('--is-bare-repository')) {
+      const gitDirectory = join(topLevel, '.git');
+      return `false\n${gitDirectory}\n${gitDirectory}\n${join(gitDirectory, 'objects')}\n`;
+    }
     if (options.args.includes('--show-toplevel')) return `${topLevel}\n`;
     return '';
   });

@@ -1,4 +1,4 @@
-import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createGitClient } from '../../src/services/git-exec.js';
@@ -96,6 +96,95 @@ describe('repository boundary', () => {
       bare: false,
     });
     await explicitlyAuthorized.client.close();
+  });
+
+  it('rejects a primary object directory symlinked outside the allowed root', async (context) => {
+    const allowed = await temporaryDirectory();
+    const outside = await temporaryDirectory();
+    const source = await initRepository(join(outside, 'source'));
+    await source.write('secret.txt', 'secret\n');
+    await source.commit('root');
+    const borrowerPath = join(allowed, 'borrower');
+    await source.git('clone', '--quiet', source.path, borrowerPath);
+    const sourceObjects = (
+      await source.git('rev-parse', '--path-format=absolute', '--git-path', 'objects')
+    ).trim();
+    const borrowerObjects = join(borrowerPath, '.git', 'objects');
+    await rm(borrowerObjects, { recursive: true });
+    try {
+      await symlink(sourceObjects, borrowerObjects, 'junction');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES') {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+    const { boundary, client } = await boundaryFor(allowed);
+
+    await expect(boundary.resolveRepository(borrowerPath)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    await client.close();
+  });
+
+  it('rejects malformed or oversized alternate-object metadata deterministically', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('a.txt', 'a\n');
+    await repository.commit('root');
+    const objectDirectory = (
+      await repository.git('rev-parse', '--path-format=absolute', '--git-path', 'objects')
+    ).trim();
+    const alternatesPath = join(objectDirectory, 'info', 'alternates');
+    const { boundary, client } = await boundaryFor(root);
+
+    await writeFile(alternatesPath, '"unterminated\n', 'utf8');
+    await expect(boundary.resolveRepository(repository.path)).rejects.toMatchObject({
+      code: 'bad_request',
+    });
+
+    await writeFile(alternatesPath, '#'.repeat(64 * 1024 + 1), 'utf8');
+    await expect(boundary.resolveRepository(repository.path)).rejects.toMatchObject({
+      code: 'limit_exceeded',
+    });
+
+    await writeFile(alternatesPath, `${'segment/'.repeat(129)}objects\n`, 'utf8');
+    await expect(boundary.resolveRepository(repository.path)).rejects.toMatchObject({
+      code: 'limit_exceeded',
+    });
+    await client.close();
+  });
+
+  it('rejects alternate-object chains beyond the bounded Git nesting depth', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('a.txt', 'a\n');
+    await repository.commit('root');
+    const primary = (
+      await repository.git('rev-parse', '--path-format=absolute', '--git-path', 'objects')
+    ).trim();
+    const alternates = Array.from({ length: 7 }, (_, index) =>
+      join(root, `alternate-${index + 1}`),
+    );
+    for (const alternate of alternates) {
+      await mkdir(join(alternate, 'info'), { recursive: true });
+    }
+    await writeFile(join(primary, 'info', 'alternates'), `${alternates[0]}\n`, 'utf8');
+    for (let index = 0; index < alternates.length - 1; index += 1) {
+      await writeFile(
+        join(alternates[index] ?? '', 'info', 'alternates'),
+        `${alternates[index + 1]}\n`,
+        'utf8',
+      );
+    }
+    const { boundary, client } = await boundaryFor(root);
+
+    await expect(boundary.resolveRepository(repository.path)).rejects.toMatchObject({
+      code: 'limit_exceeded',
+    });
+    await client.close();
   });
 
   it('keeps readable roots usable when another configured root is unavailable', async () => {

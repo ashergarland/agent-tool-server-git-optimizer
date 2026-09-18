@@ -203,6 +203,23 @@ const createFixture = async (consumer, scratch) => {
   );
   runGit(fixture, scratch, ['add', '--all']);
   runGit(fixture, scratch, ['commit', '--quiet', '--message', 'change']);
+
+  const external = join(scratch, 'external-object-source');
+  await mkdir(external);
+  runGit(external, scratch, ['init', '--quiet', '--initial-branch', 'main']);
+  await writeFile(join(external, 'borrowed.ts'), 'export const borrowed = 1;\n');
+  runGit(external, scratch, ['add', '--all']);
+  runGit(external, scratch, ['commit', '--quiet', '--message', 'borrowed root']);
+  await writeFile(join(external, 'borrowed.ts'), 'export const borrowed = 2;\n');
+  runGit(external, scratch, ['add', '--all']);
+  runGit(external, scratch, ['commit', '--quiet', '--message', 'borrowed change']);
+
+  const borrower = join(consumer, 'alternate-fixture');
+  runGit(consumer, scratch, ['clone', '--shared', '--quiet', external, borrower]);
+  const counts = runGit(borrower, scratch, ['count-objects', '--verbose']);
+  assert(/^count: 0$/mu.test(counts), 'Shared-clone fixture copied loose objects');
+  assert(/^packs: 0$/mu.test(counts), 'Shared-clone fixture copied object packs');
+  assert(/^alternate: /mu.test(counts), 'Shared-clone fixture has no alternate object database');
 };
 
 const main = async () => {
@@ -334,6 +351,26 @@ const main = async () => {
       'Packed tool reported an unchanged file',
     );
     assert(result.truncated === false, 'Packed tool unexpectedly truncated its output');
+
+    const alternateInvocation = await client.request('tools/call', {
+      name: 'summarize_commit_diff',
+      arguments: {
+        repositoryPath: 'alternate-fixture',
+        targetRef: 'HEAD',
+        whitespace: 'preserve',
+      },
+    });
+    assert(
+      alternateInvocation.result?.isError === true,
+      'Packed tool accepted an out-of-root alternate object database',
+    );
+    const alternateError = JSON.parse(alternateInvocation.result?.content?.[0]?.text ?? 'null');
+    assert(alternateError?.code === 'forbidden', 'Packed tool returned the wrong alternate error');
+    assert(
+      alternateError.message ===
+        'The Git object database lies outside the configured repository roots',
+      'Packed tool returned the wrong alternate confinement message',
+    );
 
     const exit = await client.shutdown();
     assert(exit.code === 0, `Packed entrypoint exited with code ${String(exit.code)}`);

@@ -1,5 +1,5 @@
-import { access, chmod, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { access, chmod, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { GitConfig } from '../../src/config/index.js';
 import { createServices, type GitServices } from '../../src/services/index.js';
@@ -9,7 +9,7 @@ import {
   removeTemporaryDirectories,
   seedRepository,
   temporaryDirectory,
-  type TestRepository,
+  TestRepository,
 } from '../helpers/repository.js';
 
 afterAll(removeTemporaryDirectories);
@@ -36,6 +36,31 @@ const summarize = (
     whitespace: 'preserve',
     ...input,
   });
+
+const objectDirectoryFor = async (repository: TestRepository): Promise<string> =>
+  (await repository.git('rev-parse', '--path-format=absolute', '--git-path', 'objects')).trim();
+
+const sharedClone = async (
+  source: TestRepository,
+  destination: string,
+): Promise<TestRepository> => {
+  await source.git('clone', '--shared', '--quiet', source.path, destination);
+  const clone = new TestRepository(destination);
+  const counts = await clone.git('count-objects', '--verbose');
+  expect(counts).toMatch(/^count: 0$/mu);
+  expect(counts).toMatch(/^packs: 0$/mu);
+  expect(counts).toMatch(/^alternate: /mu);
+  return clone;
+};
+
+const writeAlternates = async (
+  repository: TestRepository,
+  entries: readonly string[],
+): Promise<void> => {
+  const objectDirectory = await objectDirectoryFor(repository);
+  await mkdir(join(objectDirectory, 'info'), { recursive: true });
+  await writeFile(join(objectDirectory, 'info', 'alternates'), `${entries.join('\n')}\n`);
+};
 
 describe('summarize_commit_diff over real repositories', () => {
   it('summarizes a commit against its parent and filters lockfiles and assets', async () => {
@@ -356,6 +381,98 @@ describe('summarize_commit_diff over real repositories', () => {
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
 
+    await services.close();
+  });
+
+  it('rejects an in-root shared clone whose object database is outside every allowed root', async () => {
+    const allowed = await temporaryDirectory('git-optimizer-alternate-allowed-');
+    const outside = await temporaryDirectory('git-optimizer-alternate-outside-');
+    const source = await initRepository(join(outside, 'source'));
+    await seedRepository(source);
+    const borrower = await sharedClone(source, join(allowed, 'borrower'));
+    const services = await servicesFor(allowed);
+
+    await expect(summarize(services, borrower)).rejects.toMatchObject({
+      code: 'forbidden',
+      message: 'The Git object database lies outside the configured repository roots',
+    });
+    await services.close();
+  });
+
+  it('accepts a shared clone when its external object database is explicitly authorized', async () => {
+    const allowed = await temporaryDirectory('git-optimizer-alternate-allowed-');
+    const outside = await temporaryDirectory('git-optimizer-alternate-authorized-');
+    const source = await initRepository(join(outside, 'source'));
+    await seedRepository(source);
+    const borrower = await sharedClone(source, join(allowed, 'borrower'));
+    const borrowerObjects = await objectDirectoryFor(borrower);
+    const sourceObjects = await objectDirectoryFor(source);
+    const relativeObjectPath = relative(borrowerObjects, sourceObjects).split(sep).join('/');
+    await writeAlternates(borrower, [JSON.stringify(relativeObjectPath)]);
+    const services = await servicesFor(`${allowed};${sourceObjects}`);
+
+    const result = await summarize(services, borrower);
+    expect(result.files.map((file) => file.path)).toEqual(['src/app.ts']);
+    expect(result.ignoredFiles.sort()).toEqual(['assets/logo.png', 'package-lock.json']);
+    await services.close();
+  });
+
+  it('rejects an unauthorized object database reached through an authorized alternate', async () => {
+    const allowed = await temporaryDirectory('git-optimizer-alternate-allowed-');
+    const middleRoot = await temporaryDirectory('git-optimizer-alternate-middle-');
+    const outside = await temporaryDirectory('git-optimizer-alternate-deep-');
+    const deep = await initRepository(join(outside, 'deep'));
+    await seedRepository(deep);
+    const middle = await sharedClone(deep, join(middleRoot, 'middle'));
+    const borrower = await sharedClone(middle, join(allowed, 'borrower'));
+    const middleObjects = await objectDirectoryFor(middle);
+    const services = await servicesFor(`${allowed};${middleObjects}`);
+
+    await expect(summarize(services, borrower)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    await services.close();
+  });
+
+  it('terminates authorized cycles in the alternate object database graph', async () => {
+    const root = await temporaryDirectory('git-optimizer-alternate-cycle-');
+    const source = await initRepository(join(root, 'source'));
+    await seedRepository(source);
+    const alternate = await sharedClone(source, join(root, 'alternate'));
+    await writeAlternates(source, [await objectDirectoryFor(alternate)]);
+    const services = await servicesFor(root);
+
+    const result = await summarize(services, source);
+    expect(result.files.map((file) => file.path)).toEqual(['src/app.ts']);
+    await services.close();
+  });
+
+  it('resolves symlinks before parent segments in relative alternate paths', async (context) => {
+    const allowed = await temporaryDirectory('git-optimizer-alternate-allowed-');
+    const outside = await temporaryDirectory('git-optimizer-alternate-symlink-');
+    const source = await initRepository(join(outside, 'source'));
+    await seedRepository(source);
+    const borrower = await sharedClone(source, join(allowed, 'borrower'));
+    const borrowerObjects = await objectDirectoryFor(borrower);
+    const link = join(borrowerObjects, 'redirect');
+    await mkdir(join(outside, 'target'), { recursive: true });
+    await mkdir(join(borrowerObjects, 'source', '.git', 'objects'), { recursive: true });
+    try {
+      await symlink(join(outside, 'target'), link, 'junction');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES') {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+    await writeAlternates(borrower, ['redirect/../source/.git/objects']);
+    const services = await servicesFor(allowed);
+
+    await expect(summarize(services, borrower)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
     await services.close();
   });
 

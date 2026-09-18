@@ -87,12 +87,15 @@ For every invocation:
 2. Platform `RootBoundary` canonicalizes the root and candidate, rejecting traversal and symlink
    escapes;
 3. Git reports the canonical working-tree top level or explicitly addressed bare repository;
-4. the working tree, Git directory, shared object directory, and Git-resolved top level are each
-   checked against the allowed roots.
+4. the working tree, Git directory, primary object directory, every recursively declared alternate
+   object directory, and Git-resolved top level are each checked against the allowed roots.
 
 Only existing repositories are accepted. Returned file names are repository-relative and bounded.
 Linked worktrees and submodules are accepted only when their separate Git metadata/object storage
-is also beneath an explicitly allowed root.
+is also beneath an explicitly allowed root. Valid alternate paths follow Git's relative and
+C-quoted path semantics; malformed or unresolvable entries fail closed even where Git would only
+warn. Admission rejects graphs exceeding six alternate links, 128 object databases, 256 entries,
+1,024 resolved path components, or 64 KiB per `info/alternates` file.
 
 ## Git isolation
 
