@@ -1,63 +1,77 @@
 import { resolve } from 'node:path';
+import { ConfigurationError } from '@agent-tool-platform/runtime/config';
+import { createTestPlatformConfig } from '@agent-tool-platform/testkit';
 import { describe, expect, it } from 'vitest';
-import {
-  buildConfig,
-  ConfigurationError,
-  envSchema,
-  loadConfig,
-  withoutBlankValues,
-} from '../../src/config/index.js';
+import { buildGitConfig, gitEnvSchema, loadGitConfig } from '../../src/config/index.js';
 
 const production = (overrides: Record<string, unknown> = {}) =>
-  buildConfig(
-    envSchema.parse({
-      NODE_ENV: 'production',
-      AUTH_MODE: 'api-key',
-      API_KEYS: '12345678901234567890123456789012',
+  buildGitConfig(
+    createTestPlatformConfig({
+      serviceName: 'agent-tool-server-git-optimizer',
+      serviceVersion: '0.1.0-test',
+      env: { NODE_ENV: 'production' },
+    }),
+    gitEnvSchema.parse({
       GIT_ALLOWED_ROOTS: resolve('/srv/repositories'),
       ...overrides,
     }),
   );
 
-describe('configuration', () => {
-  it('normalizes booleans and ignores blank optional values', () => {
-    const config = loadConfig(
-      {
-        NODE_ENV: 'test',
-        AUTH_MODE: 'api-key',
-        API_KEYS: '12345678901234567890123456789012',
-        GIT_LOCAL_PATHS_ENABLED: 'True',
-        PUBLIC_BASE_URL: '',
-      },
-      { cwd: resolve('/workspace') },
-    );
+describe('Git configuration', () => {
+  it('loads through the Platform base configuration and normalizes booleans', () => {
+    const config = loadGitConfig({
+      NODE_ENV: 'test',
+      AUTH_MODE: 'disabled',
+      GIT_LOCAL_PATHS_ENABLED: 'True',
+      GIT_MAX_FILES: '12',
+    });
+    expect(config.service.name).toBe('agent-tool-server-git-optimizer');
     expect(config.git.localPathsEnabled).toBe(true);
-    expect(config.git.allowedRoots).toEqual([resolve('/workspace')]);
-    expect(config.service.publicBaseUrl).toBeUndefined();
-    expect(withoutBlankValues({ A: '', B: 'x' })).toEqual({ B: 'x' });
+    expect(config.git.limits.maxFiles).toBe(12);
   });
 
-  it('rejects disabled production authentication', () => {
-    expect(() =>
-      buildConfig(envSchema.parse({ NODE_ENV: 'production', AUTH_MODE: 'disabled' })),
-    ).toThrow(ConfigurationError);
+  it('uses the launch directory only when local paths are explicitly enabled', () => {
+    const cwd = resolve('/workspace');
+    const local = buildGitConfig(
+      createTestPlatformConfig(),
+      gitEnvSchema.parse({ GIT_LOCAL_PATHS_ENABLED: 'true' }),
+      cwd,
+    );
+    expect(local.git.allowedRoots).toEqual([cwd]);
+    expect(local.git.baseDirectory).toBe(cwd);
+
+    const disabled = buildGitConfig(
+      createTestPlatformConfig(),
+      gitEnvSchema.parse({ GIT_LOCAL_PATHS_ENABLED: 'false' }),
+      cwd,
+    );
+    expect(disabled.git.allowedRoots).toEqual([]);
   });
 
-  it('requires strong API keys', () => {
-    expect(() =>
-      buildConfig(envSchema.parse({ NODE_ENV: 'test', AUTH_MODE: 'api-key', API_KEYS: 'short' })),
-    ).toThrow('at least 32');
+  it('includes both the launch directory and explicit roots when both are enabled', () => {
+    const cwd = resolve('/workspace');
+    const explicit = resolve('/repositories');
+    const config = buildGitConfig(
+      createTestPlatformConfig(),
+      gitEnvSchema.parse({
+        GIT_LOCAL_PATHS_ENABLED: 'true',
+        GIT_ALLOWED_ROOTS: explicit,
+      }),
+      cwd,
+    );
+    expect(config.git.baseDirectory).toBe(cwd);
+    expect(config.git.allowedRoots).toEqual([cwd, explicit]);
   });
 
   it('requires explicit repository roots in production', () => {
-    expect(() => production({ GIT_ALLOWED_ROOTS: '' })).toThrow('GIT_ALLOWED_ROOTS');
+    expect(() => production({ GIT_ALLOWED_ROOTS: '' })).toThrow(ConfigurationError);
     expect(() => production({ GIT_LOCAL_PATHS_ENABLED: 'true' })).toThrow(
       'GIT_LOCAL_PATHS_ENABLED',
     );
     expect(production().git.allowedRoots).toEqual([resolve('/srv/repositories')]);
   });
 
-  it('rejects relative roots, relative executables, and inconsistent limits', () => {
+  it('rejects relative roots, executables, and inconsistent buffer limits', () => {
     expect(() => production({ GIT_ALLOWED_ROOTS: 'relative/path' })).toThrow('absolute');
     expect(() => production({ GIT_EXECUTABLE: 'git' })).toThrow('absolute');
     expect(() =>
@@ -65,7 +79,7 @@ describe('configuration', () => {
     ).toThrow('GIT_MAX_PATCH_BYTES');
   });
 
-  it('exposes bounded git limits and a configurable noise set', () => {
+  it('exposes bounded Git limits and configurable noise filters', () => {
     const config = production({
       GIT_MAX_FILES: 12,
       GIT_CONCURRENCY: 2,
@@ -82,15 +96,5 @@ describe('configuration', () => {
     expect(() => production({ GIT_MAX_FILES: 0 })).toThrow();
     expect(() => production({ GIT_TIMEOUT_MS: 10 })).toThrow();
     expect(() => production({ GIT_CONCURRENCY: 0 })).toThrow();
-  });
-
-  it('leaves a deployment without roots explicitly unusable', () => {
-    const config = buildConfig(
-      envSchema.parse({ NODE_ENV: 'development', AUTH_MODE: 'disabled' }),
-      {
-        cwd: resolve('/workspace'),
-      },
-    );
-    expect(config.git.allowedRoots).toEqual([]);
   });
 });

@@ -1,0 +1,80 @@
+{
+  "contractVersion": 1,
+  "kind": "capability-profile-declaration",
+  "capability": {
+    "id": "io.github.ashergarland/agent-tool-server-git-optimizer",
+    "displayName": "Git Optimizer",
+    "repository": "https://github.com/ashergarland/agent-tool-server-git-optimizer"
+  },
+  "profiles": [
+    {
+      "id": "local-package",
+      "description": "Read-only local Git change analysis over repositories already accessible to the invoking user.",
+      "dimensions": {
+        "execution": "local",
+        "delivery": "package",
+        "access": "local-process",
+        "workload": "filesystem",
+        "provider": "none",
+        "mutation": "read-only"
+      },
+      "delivery": {
+        "supportedForms": ["package"],
+        "publication": {
+          "kind": "package",
+          "identifier": "agent-tool-server-git-optimizer"
+        },
+        "entrypoint": {
+          "reference": "dist/stdio.js",
+          "interface": "stdio"
+        },
+        "mechanics": [
+          {
+            "id": "local-stdio",
+            "reference": "README.md#run-the-capability"
+          }
+        ],
+        "provenance": {
+          "method": "package-metadata",
+          "reference": "package.json#repository"
+        }
+      },
+      "configuration": {
+        "schema": {
+          "id": "urn:io.github.ashergarland:agent-tool-server-git-optimizer:local-configuration:v1",
+          "capabilityId": "io.github.ashergarland/agent-tool-server-git-optimizer",
+          "path": "schemas/local-configuration.schema.json"
+        },
+        "bounded": true
+      },
+      "requiredSecrets": [],
+      "providerPrerequisites": [],
+      "identity": {
+        "trustBoundary": "The invoking local user and that user's operating-system access to explicitly allowed repository roots.",
+        "rbac": []
+      },
+      "workload": {
+        "interface": {
+          "kind": "filesystem",
+          "reference": "README.md#repository-boundary"
+        },
+        "authorization": {
+          "scope": "Read-only Git operations within the launch directory or explicitly configured repository roots."
+        },
+        "lifecycle": {
+          "mode": "session",
+          "freshness": "Resolve the repository top level and both commit references for every tool invocation.",
+          "cleanup": "Drain Git children and remove Platform-owned scratch on shutdown without modifying repositories."
+        },
+        "notReady": {
+          "whenAbsent": "not-ready",
+          "reason": "Report not-ready when Git is unavailable or no configured repository root is readable."
+        }
+      },
+      "extensionSchemas": [],
+      "verification": {
+        "surfaces": ["identity", "readiness", "version", "behavior", "provenance"]
+      }
+    }
+  ]
+}

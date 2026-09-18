@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { parseNameStatus, parseNumstat, symbolsByFile } from '../../src/services/git.js';
+import {
+  parseNameStatus,
+  parseNumstat,
+  signalsByFile,
+  symbolsByFile,
+} from '../../src/services/git.js';
 
 const nul = '\0';
 
@@ -71,5 +76,21 @@ describe('NUL-delimited Git parsers', () => {
     expect(symbols.get('src/app.ts')).toEqual(['activeState', 'Widget']);
     expect(symbols.get('docs/readme.md')).toBeUndefined();
     expect([...symbols.keys()]).toEqual(['src/app.ts']);
+  });
+
+  it('drops unbounded identifiers before they can violate the tool output schema', () => {
+    const longSymbol = `symbol${'x'.repeat(300)}`;
+    const longEnvironment = `CONFIG_${'X'.repeat(300)}`;
+    const patch = [
+      '+++ b/src/config.ts',
+      '@@ -0,0 +1,2 @@',
+      `+export const ${longSymbol} = 1;`,
+      `+export const value = process.env.${longEnvironment};`,
+    ].join('\n');
+    expect(signalsByFile(patch).get('src/config.ts')).toEqual({
+      symbols: ['value'],
+      configurationKeys: [],
+      routes: [],
+    });
   });
 });

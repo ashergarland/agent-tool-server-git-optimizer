@@ -11,7 +11,7 @@ export const fakeGitClient = (handler: FakeHandler, version = '2.49.0'): GitClie
     return typeof result === 'string' ? { stdout: result, exitCode: 0 } : result;
   },
   probe: () => Promise.resolve({ executable: '/usr/bin/git', version }),
-  stats: () => ({ active: 0, queued: 0 }),
+  stats: () => ({ active: 0, queued: 0, concurrency: 1, queueLimit: 0, closed: false }),
   close: () => Promise.resolve(),
 });
 

@@ -2,7 +2,7 @@ import { mkdir, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createGitClient } from '../../src/services/git-exec.js';
-import { isWithin, RepositoryBoundary } from '../../src/services/repository.js';
+import { RepositoryBoundary } from '../../src/services/repository.js';
 import { testConfig } from '../helpers/config.js';
 import {
   initRepository,
@@ -18,18 +18,10 @@ const boundaryFor = async (root: string, overrides: Record<string, unknown> = {}
     GIT_ALLOWED_ROOTS: root,
     ...overrides,
   });
-  const client = createGitClient(config);
-  return { boundary: new RepositoryBoundary(config, client), config, client };
+  const scratch = await temporaryDirectory('git-optimizer-boundary-');
+  const client = createGitClient(config, scratch);
+  return { boundary: new RepositoryBoundary(config, client), client };
 };
-
-describe('containment helper', () => {
-  it('treats a root as containing itself but never its parent or a sibling prefix', () => {
-    expect(isWithin(join('/srv', 'repos'), join('/srv', 'repos'))).toBe(true);
-    expect(isWithin(join('/srv', 'repos'), join('/srv', 'repos', 'a', 'b'))).toBe(true);
-    expect(isWithin(join('/srv', 'repos'), join('/srv'))).toBe(false);
-    expect(isWithin(join('/srv', 'repos'), join('/srv', 'repos-other'))).toBe(false);
-  });
-});
 
 describe('repository boundary', () => {
   it('resolves a repository beneath an allowed root to its canonical top level', async () => {
@@ -45,19 +37,24 @@ describe('repository boundary', () => {
     await client.close();
   });
 
-  it('rejects traversal above the root without touching the filesystem', async () => {
+  it('rejects traversal, absolute escapes, and sibling-prefix paths', async () => {
     const root = await temporaryDirectory();
     await initRepository(join(root, 'project'));
     const { boundary, client } = await boundaryFor(join(root, 'project'));
 
-    await expect(boundary.resolveRepository('../..')).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(boundary.resolveRepository('../..')).rejects.toMatchObject({
+      code: 'forbidden',
+    });
     await expect(boundary.resolveRepository(join(root, 'elsewhere'))).rejects.toMatchObject({
       code: 'forbidden',
     });
+    await expect(
+      boundary.resolveRepository(`${join(root, 'project')}-other`),
+    ).rejects.toMatchObject({ code: 'forbidden' });
     await client.close();
   });
 
-  it('rejects a symlink that escapes the root', async () => {
+  it('rejects a symlink or junction that escapes the root', async (context) => {
     const root = await temporaryDirectory();
     const outside = await temporaryDirectory();
     await initRepository(join(outside, 'secret'));
@@ -65,11 +62,71 @@ describe('repository boundary', () => {
     const link = join(root, 'escape');
     try {
       await symlink(join(outside, 'secret'), link, 'junction');
-    } catch {
-      return; // Unprivileged Windows hosts cannot create links; confinement is covered elsewhere.
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EACCES') {
+        context.skip();
+        return;
+      }
+      throw error;
     }
     const { boundary, client } = await boundaryFor(root);
     await expect(boundary.resolveRepository(link)).rejects.toMatchObject({ code: 'forbidden' });
+    await client.close();
+  });
+
+  it('rejects linked worktrees unless their Git metadata roots are also authorized', async () => {
+    const allowed = await temporaryDirectory();
+    const outside = await temporaryDirectory();
+    const source = await initRepository(join(outside, 'source'));
+    await source.write('TOP_SECRET.ts', 'export const secret = 1;\n');
+    await source.commit('root');
+    const linked = join(allowed, 'linked');
+    await source.git('worktree', 'add', '--quiet', '--detach', linked, 'HEAD');
+
+    const confined = await boundaryFor(allowed);
+    await expect(confined.boundary.resolveRepository(linked)).rejects.toMatchObject({
+      code: 'forbidden',
+    });
+    await confined.client.close();
+
+    const explicitlyAuthorized = await boundaryFor(`${allowed};${source.path}`);
+    await expect(explicitlyAuthorized.boundary.resolveRepository(linked)).resolves.toMatchObject({
+      path: linked,
+      bare: false,
+    });
+    await explicitlyAuthorized.client.close();
+  });
+
+  it('keeps readable roots usable when another configured root is unavailable', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('a.txt', 'a\n');
+    await repository.commit('root');
+    const missing = join(root, 'missing-root');
+    const { boundary, client } = await boundaryFor(`${missing};${root}`);
+
+    await expect(boundary.roots()).resolves.toEqual([root]);
+    await expect(boundary.resolveRepository(repository.path)).resolves.toMatchObject({
+      path: repository.path,
+    });
+    await client.close();
+  });
+
+  it('accepts equivalent path casing on Windows', async (context) => {
+    if (process.platform !== 'win32') {
+      context.skip();
+      return;
+    }
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('a.txt', 'a\n');
+    await repository.commit('root');
+    const { boundary, client } = await boundaryFor(root);
+
+    await expect(boundary.resolveRepository(repository.path.toUpperCase())).resolves.toMatchObject({
+      path: repository.path,
+    });
     await client.close();
   });
 
@@ -98,7 +155,6 @@ describe('repository boundary', () => {
     await expect(boundary.resolveRepository(join(root, 'plain'))).rejects.toMatchObject({
       code: 'bad_request',
     });
-    // A regular file must never become a Git working directory.
     await expect(boundary.resolveRepository(join(root, 'plain', 'file.txt'))).rejects.toMatchObject(
       { code: 'bad_request' },
     );
@@ -108,16 +164,17 @@ describe('repository boundary', () => {
     await client.close();
   });
 
-  it('refuses every request when no root is configured', async () => {
+  it('reports not-ready when no repository root is configured', async () => {
     const config = testConfig({ GIT_LOCAL_PATHS_ENABLED: 'false' });
-    const client = createGitClient(config);
+    const scratch = await temporaryDirectory('git-optimizer-boundary-');
+    const client = createGitClient(config, scratch);
     const boundary = new RepositoryBoundary(config, client);
-    await expect(boundary.resolveRepository('.')).rejects.toMatchObject({ code: 'forbidden' });
-    await expect(boundary.roots()).rejects.toMatchObject({ code: 'forbidden' });
+    await expect(boundary.resolveRepository('.')).rejects.toMatchObject({ code: 'not_ready' });
+    await expect(boundary.roots()).rejects.toMatchObject({ code: 'not_ready' });
     await client.close();
   });
 
-  it('supports an explicitly mounted bare repository', async () => {
+  it('supports an explicitly addressed bare repository', async () => {
     const root = await temporaryDirectory();
     const source = await initRepository(join(root, 'source'));
     await source.write('a.txt', 'a\n');

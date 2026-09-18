@@ -1,0 +1,16 @@
+{
+  "$comment": "Synthetic Level 1 fixture preserving the Git evidence shape of PR 1842 without encoding an incident diagnosis.",
+  "baseFiles": {
+    "src/config.ts": "export const port = Number(process.env.APP_PORT ?? 3000);\n",
+    "src/routes/health.ts": "export const registerHealth = (app: App) => app.get('/healthz', checkHealth);\n",
+    "deploy/service.yaml": "containerPort: 8080\nreadinessProbe:\n  path: /healthz\n"
+  },
+  "targetFiles": {
+    "src/config.ts": "export const port = Number(process.env.PORT ?? 8080);\n",
+    "src/routes/health.ts": "export const registerHealth = (app: App) => app.get('/health', checkHealth);\n",
+    "deploy/service.yaml": "containerPort: 8080\nreadinessProbe:\n  path: /healthz\n",
+    "tests/health.test.ts": "it('serves the health route', () => expect(route).toBe('/health'));\n"
+  },
+  "expectedChangedFiles": ["src/config.ts", "src/routes/health.ts", "tests/health.test.ts"],
+  "unchangedDeploymentFile": "deploy/service.yaml"
+}

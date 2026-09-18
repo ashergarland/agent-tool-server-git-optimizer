@@ -1,22 +1,15 @@
-import { realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
-import type { AppConfig } from '../config/index.js';
-import { badRequest, forbidden, notFound } from '../errors.js';
+import { stat } from 'node:fs/promises';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { AppError, badRequest, forbidden, notReady } from '@agent-tool-platform/runtime/errors';
+import { RootBoundary } from '@agent-tool-platform/runtime/fs';
+import type { GitConfig } from '../config/index.js';
 import type { GitClient } from './git-exec.js';
 
 export interface ResolvedRepository {
-  /** Canonical directory Git commands run from. */
   readonly path: string;
-  /** Canonical allowed root that contains the repository. */
   readonly root: string;
   readonly bare: boolean;
 }
-
-/** True when `target` is `root` or lives beneath it, without treating `..` as containment. */
-export const isWithin = (root: string, target: string): boolean => {
-  const step = relative(root, target);
-  return step === '' || (!step.startsWith('..') && !isAbsolute(step));
-};
 
 const hasControlCharacters = (value: string): boolean =>
   [...value].some((character) => {
@@ -24,35 +17,60 @@ const hasControlCharacters = (value: string): boolean =>
     return code < 32 || code === 127;
   });
 
+interface ResolvedRoot {
+  readonly path: string;
+  readonly boundary: RootBoundary;
+}
+
+interface ConfiguredRoot {
+  readonly path: string;
+  readonly boundary: RootBoundary;
+}
+
+interface LexicalRoot extends ConfiguredRoot {
+  readonly relativeInput: string;
+}
+
+const relativeWithin = (root: string, requested: string): string | undefined => {
+  const fromRoot = relative(resolve(root), resolve(requested));
+  if (fromRoot === '') return '.';
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    return undefined;
+  }
+  return fromRoot;
+};
+
 export class RepositoryBoundary {
-  private canonicalRoots: Promise<readonly string[]> | undefined;
+  private readonly configuredRoots: readonly ConfiguredRoot[];
 
   public constructor(
-    private readonly config: AppConfig,
+    private readonly config: GitConfig,
     private readonly git: GitClient,
-  ) {}
-
-  /** Canonical allowed roots, re-resolved whenever resolution previously failed. */
-  public roots(): Promise<readonly string[]> {
-    this.canonicalRoots ??= this.resolveRoots().catch((error: unknown) => {
-      this.canonicalRoots = undefined;
-      throw error;
-    });
-    return this.canonicalRoots;
+  ) {
+    this.configuredRoots = config.git.allowedRoots.map((root) => ({
+      path: root,
+      boundary: new RootBoundary({ root, allowRoot: true }),
+    }));
   }
 
-  /**
-   * Confines a caller-supplied path to the configured roots. The lexical check runs before any
-   * filesystem access so an out-of-bounds path cannot be used to probe the host, and the
-   * canonical repository top level is re-checked so Git cannot walk upwards past a root.
-   */
+  public async roots(): Promise<readonly string[]> {
+    if (this.configuredRoots.length === 0) {
+      throw notReady('No readable repository root is configured');
+    }
+    const roots = await this.resolvedRoots();
+    if (roots.length === 0) {
+      throw notReady('No configured repository root is readable');
+    }
+    return roots.map(({ path }) => path);
+  }
+
   public async resolveRepository(
     repositoryPath: string,
     signal?: AbortSignal,
   ): Promise<ResolvedRepository> {
-    if (this.config.git.allowedRoots.length === 0) {
-      throw forbidden(
-        'This deployment has no readable repository root; configure GIT_ALLOWED_ROOTS or run locally over stdio',
+    if (this.configuredRoots.length === 0) {
+      throw notReady(
+        'No readable repository root is configured; run locally over stdio or configure GIT_ALLOWED_ROOTS',
       );
     }
     if (hasControlCharacters(repositoryPath)) {
@@ -60,63 +78,110 @@ export class RepositoryBoundary {
     }
 
     const requested = resolve(this.config.git.baseDirectory, repositoryPath);
-    if (!this.config.git.allowedRoots.some((root) => isWithin(root, requested))) {
+    const lexicalRoots = this.configuredRoots
+      .map((configured): LexicalRoot | undefined => {
+        const relativeInput = relativeWithin(configured.path, requested);
+        return relativeInput === undefined ? undefined : { ...configured, relativeInput };
+      })
+      .filter((root): root is LexicalRoot => root !== undefined);
+    if (lexicalRoots.length === 0) {
       throw forbidden('repositoryPath is outside the configured repository roots');
     }
 
-    const canonicalRoots = await this.roots();
-    const candidate = await realpath(requested).catch(() => {
-      throw notFound('repositoryPath does not exist or is not readable');
-    });
-    if (!canonicalRoots.some((root) => isWithin(root, candidate))) {
-      throw forbidden('repositoryPath resolves outside the configured repository roots');
+    let candidate: Awaited<ReturnType<RootBoundary['resolve']>> | undefined;
+    for (const lexicalRoot of lexicalRoots) {
+      try {
+        candidate = await lexicalRoot.boundary.resolve(lexicalRoot.relativeInput);
+        break;
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'not_ready') continue;
+        throw error;
+      }
     }
-    // Git is about to run with this path as its working directory.
-    const info = await stat(candidate).catch(() => undefined);
-    if (!info?.isDirectory()) {
+    if (!candidate) {
+      throw notReady('No readable repository root contains the requested path');
+    }
+    const candidateStat = await stat(candidate.realPath);
+    if (!candidateStat.isDirectory()) {
       throw badRequest('repositoryPath must be a directory containing a Git repository');
     }
 
     const layout = await this.git.run({
-      cwd: candidate,
-      args: ['rev-parse', '--is-bare-repository', '--absolute-git-dir'],
-      allowFailure: false,
+      cwd: candidate.realPath,
+      args: [
+        'rev-parse',
+        '--is-bare-repository',
+        '--absolute-git-dir',
+        '--path-format=absolute',
+        '--git-common-dir',
+      ],
       signal,
     });
-    const [bareFlag = 'false', gitDirectory = ''] = layout.stdout.split('\n').map((l) => l.trim());
+    const [bareFlag = 'false', gitDirectory = '', commonDirectory = ''] = layout.stdout
+      .split('\n')
+      .map((line) => line.trim());
     const bare = bareFlag === 'true';
+    if (!gitDirectory || !commonDirectory) {
+      throw badRequest('The requested path is not a readable Git repository');
+    }
+
+    const roots = await this.resolvedRoots();
+    await this.resolveRepositoryDirectory(resolve(candidate.realPath, gitDirectory), roots);
+    await this.resolveRepositoryDirectory(resolve(candidate.realPath, commonDirectory), roots);
 
     let top = gitDirectory;
     if (!bare) {
       const topLevel = await this.git.run({
-        cwd: candidate,
+        cwd: candidate.realPath,
         args: ['rev-parse', '--show-toplevel'],
-        allowFailure: false,
         signal,
       });
       top = topLevel.stdout.trim();
     }
     if (!top) throw badRequest('The requested path is not a readable Git repository');
 
-    const canonicalTop = await realpath(resolve(top)).catch(() => {
+    const canonicalTop = await this.resolveKnownPath(resolve(top), await this.resolvedRoots());
+    const topStat = await stat(canonicalTop.realPath);
+    if (!topStat.isDirectory()) {
       throw badRequest('The requested path is not a readable Git repository');
-    });
-    const root = canonicalRoots.find((entry) => isWithin(entry, canonicalTop));
-    if (!root) {
-      throw forbidden('The resolved Git repository lies outside the configured repository roots');
     }
-    return { path: canonicalTop, root, bare };
+    return {
+      path: canonicalTop.realPath,
+      root: canonicalTop.root,
+      bare,
+    };
   }
 
-  private async resolveRoots(): Promise<readonly string[]> {
-    const resolved: string[] = [];
-    for (const root of this.config.git.allowedRoots) {
-      const canonical = await realpath(root).catch(() => undefined);
-      if (canonical) resolved.push(canonical);
+  private async resolvedRoots(): Promise<readonly ResolvedRoot[]> {
+    const settled = await Promise.allSettled(
+      this.configuredRoots.map(async ({ boundary }) => ({
+        path: await boundary.root(),
+        boundary,
+      })),
+    );
+    return settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+  }
+
+  private async resolveKnownPath(
+    requested: string,
+    roots: readonly ResolvedRoot[],
+  ): Promise<{ readonly realPath: string; readonly root: string }> {
+    const owner = roots.find(({ path, boundary }) => boundary.isWithin(path, requested, true));
+    if (!owner) {
+      throw forbidden('The resolved Git repository lies outside the configured repository roots');
     }
-    if (resolved.length === 0) {
-      throw forbidden('No configured repository root is currently readable');
+    const relativeInput = owner.boundary.formatRelative(owner.path, requested);
+    const resolved = await owner.boundary.resolve(relativeInput);
+    return { realPath: resolved.realPath, root: owner.path };
+  }
+
+  private async resolveRepositoryDirectory(
+    requested: string,
+    roots: readonly ResolvedRoot[],
+  ): Promise<void> {
+    const resolved = await this.resolveKnownPath(requested, roots);
+    if (!(await stat(resolved.realPath)).isDirectory()) {
+      throw badRequest('The requested path is not a readable Git repository');
     }
-    return resolved;
   }
 }

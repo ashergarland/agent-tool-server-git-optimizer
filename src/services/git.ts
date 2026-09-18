@@ -1,5 +1,5 @@
-import type { AppConfig } from '../config/index.js';
-import { badRequest } from '../errors.js';
+import { AppError, badRequest } from '@agent-tool-platform/runtime/errors';
+import type { GitConfig } from '../config/index.js';
 import type { GitClient } from './git-exec.js';
 import type { RepositoryBoundary } from './repository.js';
 
@@ -14,6 +14,9 @@ export interface FileSummary {
   readonly deletions: number;
   readonly binary: boolean;
   readonly details: string;
+  readonly symbols: string[];
+  readonly configurationKeys: string[];
+  readonly routes: string[];
 }
 
 export interface DiffSummary {
@@ -176,12 +179,73 @@ export const parseNumstat = (output: string): Map<string, NumstatEntry> => {
   return stats;
 };
 
+export interface DiffSignals {
+  readonly symbols: string[];
+  readonly configurationKeys: string[];
+  readonly routes: string[];
+}
+
+interface MutableDiffSignals {
+  readonly symbols: Set<string>;
+  readonly configurationKeys: Set<string>;
+  readonly routes: Set<string>;
+}
+
+const signalLimit = 3;
+const maximumSignalLength = 255;
+const declaration =
+  /(?:export\s+)?(?:declare\s+)?(?:async\s+)?(?:function|class|interface|type|struct|enum|def|fn|const|let|var)\s+([A-Za-z_$][\w$]*)/u;
+const callable = /([A-Za-z_$][\w$]*)\s*\([^)]*\)/u;
+const environmentKey =
+  /process\.env(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[['"]([A-Za-z_][A-Za-z0-9_]*)['"]\])/u;
+const assignedConfigurationKey = /['"]?([A-Z][A-Z0-9_]{2,})['"]?\s*[:=]/u;
+const routeCall =
+  /\.(get|post|put|patch|delete|head|options)\s*\(\s*(['"`])([^'"`\r\n]{1,200})\2/iu;
+
+const addSignal = (target: Set<string>, value: string | undefined): void => {
+  if (value && value.length <= maximumSignalLength && target.size < signalLimit) {
+    target.add(value);
+  }
+};
+
+const mutableSignals = (
+  byFile: Map<string, MutableDiffSignals>,
+  path: string,
+): MutableDiffSignals => {
+  let signals = byFile.get(path);
+  if (!signals) {
+    signals = {
+      symbols: new Set(),
+      configurationKeys: new Set(),
+      routes: new Set(),
+    };
+    byFile.set(path, signals);
+  }
+  return signals;
+};
+
+const collectLineSignals = (signals: MutableDiffSignals, content: string): void => {
+  const symbol = declaration.exec(content)?.[1];
+  addSignal(signals.symbols, symbol);
+
+  const environment = environmentKey.exec(content);
+  addSignal(signals.configurationKeys, environment?.[1] ?? environment?.[2]);
+  const assigned = assignedConfigurationKey.exec(content)?.[1];
+  addSignal(signals.configurationKeys, assigned);
+  if (symbol && assigned === symbol) signals.symbols.delete(symbol);
+
+  const route = routeCall.exec(content);
+  if (route?.[1] && route[3]) {
+    addSignal(signals.routes, `${route[1].toUpperCase()} ${route[3]}`);
+  }
+};
+
 /**
- * Best-effort symbol names taken from hunk headers. Git derives them from language heuristics,
- * so they are advisory context rather than a reliable list of changed definitions.
+ * Extracts bounded, best-effort orientation signals from hunk headers and changed lines. Values
+ * and full source lines are never returned.
  */
-export const symbolsByFile = (patch: string): Map<string, readonly string[]> => {
-  const names = new Map<string, Set<string>>();
+export const signalsByFile = (patch: string): Map<string, DiffSignals> => {
+  const signals = new Map<string, MutableDiffSignals>();
   let path: string | undefined;
   for (const line of patch.split('\n')) {
     if (line.startsWith('+++ ')) {
@@ -189,20 +253,42 @@ export const symbolsByFile = (patch: string): Map<string, readonly string[]> => 
       path = target.startsWith('b/') ? target.slice(2) : undefined;
       continue;
     }
-    if (!path || !line.startsWith('@@')) continue;
-    const context = /^@@.*?@@\s*(.+)$/u.exec(line)?.[1]?.trim();
-    if (!context) continue;
-    const candidate =
-      /(?:function|class|interface|type|struct|enum|def|fn)\s+([A-Za-z_$][\w$]*)/u.exec(
-        context,
-      )?.[1] ?? /([A-Za-z_$][\w$]*)\s*\([^)]*\)/u.exec(context)?.[1];
-    if (!candidate) continue;
-    const fileNames = names.get(path) ?? new Set<string>();
-    fileNames.add(candidate);
-    names.set(path, fileNames);
+    if (!path) continue;
+    const fileSignals = mutableSignals(signals, path);
+    if (line.startsWith('@@')) {
+      const context = /^@@.*?@@\s*(.+)$/u.exec(line)?.[1]?.trim();
+      addSignal(
+        fileSignals.symbols,
+        context ? (declaration.exec(context)?.[1] ?? callable.exec(context)?.[1]) : undefined,
+      );
+      continue;
+    }
+    if (
+      (line.startsWith('+') || line.startsWith('-')) &&
+      !line.startsWith('+++') &&
+      !line.startsWith('---')
+    ) {
+      collectLineSignals(fileSignals, line.slice(1));
+    }
   }
-  return new Map([...names].map(([file, values]) => [file, [...values].slice(0, 3)]));
+  return new Map(
+    [...signals].map(([file, values]) => [
+      file,
+      {
+        symbols: [...values.symbols],
+        configurationKeys: [...values.configurationKeys],
+        routes: [...values.routes],
+      },
+    ]),
+  );
 };
+
+export const symbolsByFile = (patch: string): Map<string, readonly string[]> =>
+  new Map(
+    [...signalsByFile(patch)]
+      .filter(([, signals]) => signals.symbols.length > 0)
+      .map(([file, signals]) => [file, signals.symbols]),
+  );
 
 const countLabel = (additions: number, deletions: number): string =>
   `${additions} addition${additions === 1 ? '' : 's'}, ${deletions} deletion${
@@ -214,7 +300,7 @@ export class GitService {
   private readonly ignoredDirectories: ReadonlySet<string>;
 
   public constructor(
-    private readonly config: AppConfig,
+    private readonly config: GitConfig,
     private readonly boundary: RepositoryBoundary,
     private readonly client: GitClient,
     noise: { basenames?: readonly string[]; directories?: readonly string[] } = {},
@@ -281,22 +367,42 @@ export class GitService {
         `${ignored.length} lockfile or generated-asset change${ignored.length === 1 ? ' was' : 's were'} filtered and not reviewed.`,
       );
     }
+    if (ignored.length > limits.maxIgnoredFiles) {
+      warnings.push(
+        `Only the first ${limits.maxIgnoredFiles} of ${ignored.length} filtered paths were returned.`,
+      );
+    }
 
-    const symbols = await this.symbolsFor(cwd, diffFlags, range, retained, warnings, signal);
+    const signals = await this.signalsFor(cwd, diffFlags, range, retained, warnings, signal);
 
     const files = retained.map(({ path, change }) => {
       const counts = stats.get(path) ?? { additions: 0, deletions: 0, binary: false };
-      const names = symbols.get(path) ?? [];
+      const fileSignals = signals.get(path) ?? {
+        symbols: [],
+        configurationKeys: [],
+        routes: [],
+      };
       const label = counts.binary
         ? 'binary content changed'
         : countLabel(counts.additions, counts.deletions);
+      const contexts = [
+        fileSignals.symbols.length > 0 ? `symbols ${fileSignals.symbols.join(', ')}` : undefined,
+        fileSignals.configurationKeys.length > 0
+          ? `configuration ${fileSignals.configurationKeys.join(', ')}`
+          : undefined,
+        fileSignals.routes.length > 0 ? `routes ${fileSignals.routes.join(', ')}` : undefined,
+      ].filter((entry): entry is string => entry !== undefined);
       return {
         path: displayPath(path, limits.maxPathLength),
         change,
         additions: counts.additions,
         deletions: counts.deletions,
         binary: counts.binary,
-        details: names.length > 0 ? `Changed ${names.join(', ')} (${label})` : `Updated ${label}`,
+        details:
+          contexts.length > 0 ? `Changed ${contexts.join('; ')} (${label})` : `Updated ${label}`,
+        symbols: fileSignals.symbols,
+        configurationKeys: fileSignals.configurationKeys,
+        routes: fileSignals.routes,
       } satisfies FileSummary;
     });
 
@@ -304,10 +410,15 @@ export class GitService {
       files.length === 0
         ? 'No reviewable changes between the requested commits.'
         : files.map((file) => `[${file.change} ${file.path}: ${file.details}]`).join('\n');
-    const summary =
-      summaryText.length > limits.maxSummaryLength
-        ? `${summaryText.slice(0, limits.maxSummaryLength - 1)}…`
-        : summaryText;
+    const summaryTruncated = summaryText.length > limits.maxSummaryLength;
+    const summary = summaryTruncated
+      ? `${summaryText.slice(0, limits.maxSummaryLength - 1)}…`
+      : summaryText;
+    if (summaryTruncated) {
+      warnings.push(
+        'The textual summary reached its configured length limit; the structured file list remains authoritative.',
+      );
+    }
 
     return {
       summary,
@@ -387,14 +498,14 @@ export class GitService {
    * Collects hunk-header symbols for the retained subset only. Paths that Git would quote are
    * skipped so a crafted filename can never be reinterpreted as an option or pathspec.
    */
-  private async symbolsFor(
+  private async signalsFor(
     cwd: string,
     diffFlags: readonly string[],
     range: readonly string[],
     retained: readonly StatusEntry[],
     warnings: string[],
     signal: AbortSignal | undefined,
-  ): Promise<Map<string, readonly string[]>> {
+  ): Promise<Map<string, DiffSignals>> {
     if (retained.length === 0) return new Map();
     const limits = this.config.git.limits;
     const budget = Math.floor(limits.maxArgumentBytes / 2);
@@ -424,9 +535,12 @@ export class GitService {
         maxBufferBytes: limits.maxPatchBytes,
         signal,
       });
-      return symbolsByFile(patch.stdout);
+      return signalsByFile(patch.stdout);
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'limit_exceeded') {
+      if (
+        error instanceof AppError &&
+        (error.code === 'limit_exceeded' || error.code === 'upstream_error')
+      ) {
         warnings.push(
           'The diff was too large to extract symbol context; per-file counts are still exact.',
         );

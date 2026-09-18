@@ -1,8 +1,8 @@
 import { access, chmod, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { AppConfig } from '../../src/config/index.js';
-import { createServices } from '../../src/services/index.js';
+import type { GitConfig } from '../../src/config/index.js';
+import { createServices, type GitServices } from '../../src/services/index.js';
 import { testConfig } from '../helpers/config.js';
 import {
   initRepository,
@@ -14,17 +14,19 @@ import {
 
 afterAll(removeTemporaryDirectories);
 
-const servicesFor = (root: string, overrides: Record<string, unknown> = {}) => {
-  const config: AppConfig = testConfig({
+const servicesFor = async (root: string, overrides: Record<string, unknown> = {}) => {
+  const config: GitConfig = testConfig({
     GIT_LOCAL_PATHS_ENABLED: 'false',
     GIT_ALLOWED_ROOTS: root,
     ...overrides,
   });
-  return createServices(config);
+  return createServices(config, {
+    scratchDirectory: await temporaryDirectory('git-optimizer-integration-'),
+  });
 };
 
 const summarize = (
-  services: ReturnType<typeof servicesFor>,
+  services: GitServices,
   repository: TestRepository,
   input: Record<string, unknown> = {},
 ) =>
@@ -40,7 +42,7 @@ describe('summarize_commit_diff over real repositories', () => {
     const root = await temporaryDirectory();
     const repository = await initRepository(join(root, 'project'));
     const { root: rootCommit, head } = await seedRepository(repository);
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const result = await summarize(services, repository);
     expect(result.targetCommit).toBe(head);
@@ -63,7 +65,7 @@ describe('summarize_commit_diff over real repositories', () => {
       await repository.write('src/app.ts', 'export const a = 1;\n');
       return repository.commit('root');
     })();
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const result = await summarize(services, repository, { targetRef: rootCommit });
     expect(result.files.map((file) => file.path)).toEqual(['src/app.ts']);
@@ -79,7 +81,7 @@ describe('summarize_commit_diff over real repositories', () => {
     const { head } = await seedRepository(repository);
     await repository.git('tag', '--annotate', 'v1', '--message', 'release');
     await repository.git('branch', 'feature');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const byTag = await summarize(services, repository, { baseRef: 'v1', targetRef: 'feature' });
     expect(byTag.baseCommit).toBe(head);
@@ -100,7 +102,7 @@ describe('summarize_commit_diff over real repositories', () => {
     const root = await temporaryDirectory();
     const repository = await initRepository(join(root, 'project'));
     await seedRepository(repository);
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     for (const ref of ['--output=/tmp/pwned', '-HEAD', 'HEAD;rm -rf /', 'HEAD\nHEAD']) {
       await expect(summarize(services, repository, { baseRef: ref })).rejects.toMatchObject({
@@ -117,7 +119,7 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.commit('root');
     await repository.write('app.py', 'def run():\n        return 1   \n');
     await repository.commit('reindent');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const preserved = await summarize(services, repository);
     expect(preserved.files.map((file) => file.path)).toEqual(['app.py']);
@@ -135,7 +137,7 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.commit('root');
     await repository.write('notes.txt', 'alpha   \nbeta\t\n');
     await repository.commit('trailing space');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     expect((await summarize(services, repository)).files).toHaveLength(1);
     expect((await summarize(services, repository, { whitespace: 'ignore-eol' })).files).toEqual([]);
@@ -150,7 +152,7 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.write('a file with spaces.ts', 'export const a = 1;\n');
     await repository.write('ünïcode/файл.ts', 'export const b = 2;\n');
     await repository.commit('unusual names');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const result = await summarize(services, repository);
     expect(result.files.map((file) => file.path).sort()).toEqual([
@@ -168,7 +170,7 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.commit('root');
     await writeFile(join(repository.path, 'blob.bin'), Buffer.from([0, 1, 2, 0, 3, 4]));
     await repository.commit('binary');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const result = await summarize(services, repository);
     expect(result.files[0]).toMatchObject({ path: 'blob.bin', binary: true, additions: 0 });
@@ -185,7 +187,7 @@ describe('summarize_commit_diff over real repositories', () => {
       await repository.write(`src/file-${index}.ts`, `export const value = ${index};\n`);
     }
     await repository.commit('many files');
-    const services = servicesFor(root, { GIT_MAX_FILES: 5 });
+    const services = await servicesFor(root, { GIT_MAX_FILES: 5 });
 
     const result = await summarize(services, repository);
     expect(result.returnedFiles).toBe(5);
@@ -195,6 +197,69 @@ describe('summarize_commit_diff over real repositories', () => {
 
     const narrower = await summarize(services, repository, { maxFiles: 2 });
     expect(narrower.returnedFiles).toBe(2);
+    await services.close();
+  });
+
+  it('bounds ignored paths and summary text without hiding structured coverage', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('base.txt', 'base\n');
+    await repository.commit('root');
+    for (let index = 0; index < 5; index += 1) {
+      await repository.write(
+        `src/long-component-name-${index}.ts`,
+        `export function changedComponent${index}(): number {\n  return ${index};\n}\n`,
+      );
+    }
+    await repository.write('package-lock.json', '{}\n');
+    await repository.write('yarn.lock', '# lock\n');
+    await repository.write('Cargo.lock', '# lock\n');
+    await repository.commit('bounded output');
+    const services = await servicesFor(root, {
+      GIT_MAX_IGNORED_FILES: 1,
+      GIT_MAX_SUMMARY_LENGTH: 256,
+    });
+
+    const result = await summarize(services, repository);
+    expect(result.returnedFiles).toBe(5);
+    expect(result.totalFiles).toBe(5);
+    expect(result.truncated).toBe(false);
+    expect(result.ignoredFiles).toHaveLength(1);
+    expect(result.ignoredFileCount).toBe(3);
+    expect(result.summary).toHaveLength(256);
+    expect(result.summary.endsWith('…')).toBe(true);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('first 1 of 3 filtered paths'),
+        expect.stringContaining('textual summary reached'),
+      ]),
+    );
+    await services.close();
+  });
+
+  it('keeps exact file counts when best-effort signal extraction exceeds its patch budget', async () => {
+    const root = await temporaryDirectory();
+    const repository = await initRepository(join(root, 'project'));
+    await repository.write('src/large.ts', 'export const seed = 0;\n');
+    await repository.commit('root');
+    await repository.write(
+      'src/large.ts',
+      Array.from(
+        { length: 2_000 },
+        (_, index) => `export const changedValue${index} = ${index};`,
+      ).join('\n'),
+    );
+    await repository.commit('large patch');
+    const services = await servicesFor(root, { GIT_MAX_PATCH_BYTES: 16 * 1024 });
+
+    const result = await summarize(services, repository);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]?.path).toBe('src/large.ts');
+    expect(result.files[0]?.additions).toBe(2_000);
+    expect(result.files[0]?.symbols).toEqual([]);
+    expect(result.warnings).toContain(
+      'The diff was too large to extract symbol context; per-file counts are still exact.',
+    );
     await services.close();
   });
 
@@ -219,14 +284,14 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.git('config', 'core.fsmonitor', script);
     await expect(access(marker)).rejects.toBeInstanceOf(Error);
 
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
     const result = await summarize(services, repository);
     expect(result.files.map((file) => file.path)).toContain('src/app.ts');
     await expect(access(marker)).rejects.toBeInstanceOf(Error);
     await services.close();
   });
 
-  it('runs Git without inherited credential helpers, prompts, or user configuration', async () => {
+  it('pins repository-controlled helpers, prompts, and executable configuration', async () => {
     const root = await temporaryDirectory();
     const repository = await initRepository(join(root, 'project'));
     await repository.write('base.txt', 'base\n');
@@ -234,7 +299,7 @@ describe('summarize_commit_diff over real repositories', () => {
     await repository.git('config', 'credential.helper', '!echo leaked');
     await repository.git('config', 'core.pager', '!echo leaked');
     await repository.git('config', 'diff.external', '/bin/false');
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
     const client = services.gitClient;
 
     const effective = async (key: string) =>
@@ -246,21 +311,16 @@ describe('summarize_commit_diff over real repositories', () => {
         })
       ).stdout.trim();
 
-    // `--get` reports the winning value, which is always the one this server pins.
-    expect(await effective('credential.helper')).toBe('');
-    expect(await effective('core.askPass')).toBe('');
-    expect(await effective('core.pager')).toBe('cat');
-    expect(await effective('diff.external')).toBe('');
-    expect(await effective('core.fsmonitor')).toBe('false');
-    expect(await effective('gc.auto')).toBe('0');
-
-    const global = await client.run({
-      cwd: repository.path,
-      args: ['config', '--global', '--list'],
-      allowFailure: true,
-    });
-    expect(global.stdout.trim()).toBe('');
-    await services.close();
+    try {
+      expect(await effective('credential.helper')).toBe('');
+      expect(await effective('core.askPass')).toBe('');
+      expect(await effective('core.pager')).toBe('cat');
+      expect(await effective('diff.external')).toBe('');
+      expect(await effective('core.fsmonitor')).toBe('false');
+      expect(await effective('gc.auto')).toBe('0');
+    } finally {
+      await services.close();
+    }
   });
 
   it('summarizes through an explicitly supported bare repository', async () => {
@@ -268,7 +328,7 @@ describe('summarize_commit_diff over real repositories', () => {
     const source = await initRepository(join(root, 'source'));
     await seedRepository(source);
     await source.git('clone', '--bare', '--quiet', source.path, join(root, 'mirror.git'));
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     const result = await services.git.summarizeCommitDiff({
       repositoryPath: join(root, 'mirror.git'),
@@ -280,13 +340,13 @@ describe('summarize_commit_diff over real repositories', () => {
     await services.close();
   });
 
-  it('confines the tool to configured roots and reports readiness accordingly', async () => {
+  it('confines the tool to configured roots', async () => {
     const root = await temporaryDirectory();
     const outside = await temporaryDirectory();
     const repository = await initRepository(join(root, 'project'));
     await seedRepository(repository);
     await initRepository(join(outside, 'other'));
-    const services = servicesFor(root);
+    const services = await servicesFor(root);
 
     await expect(
       services.git.summarizeCommitDiff({
@@ -296,17 +356,6 @@ describe('summarize_commit_diff over real repositories', () => {
       }),
     ).rejects.toMatchObject({ code: 'forbidden' });
 
-    const readiness = await services.readiness();
-    expect(readiness.ready).toBe(true);
-    expect(readiness.gitVersion).toMatch(/^\d+\.\d+/u);
-    await services.close();
-  });
-
-  it('is not ready when no repository root is configured', async () => {
-    const services = createServices(testConfig({ GIT_LOCAL_PATHS_ENABLED: 'false' }));
-    const readiness = await services.readiness();
-    expect(readiness.ready).toBe(false);
-    expect(readiness.checks.find((check) => check.name === 'repositoryRoots')?.ok).toBe(false);
     await services.close();
   });
 
@@ -314,7 +363,10 @@ describe('summarize_commit_diff over real repositories', () => {
     const root = await temporaryDirectory();
     const repository = await initRepository(join(root, 'project'));
     await seedRepository(repository);
-    const services = servicesFor(root, { GIT_CONCURRENCY: 2, GIT_QUEUE_LIMIT: 64 });
+    const services = await servicesFor(root, {
+      GIT_CONCURRENCY: 2,
+      GIT_QUEUE_LIMIT: 64,
+    });
 
     const results = await Promise.all(
       Array.from({ length: 6 }, () => summarize(services, repository)),
